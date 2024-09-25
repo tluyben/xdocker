@@ -58,6 +58,21 @@ sudo usermod -aG docker ubuntu
 # Use sudo to run newgrp, which will exit immediately
 sudo -u ubuntu newgrp docker
 
+# Install Go 1.20.1
+GO_VERSION="1.20.1"
+wget https://golang.org/dl/go${GO_VERSION}.linux-amd64.tar.gz
+sudo tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz
+rm go${GO_VERSION}.linux-amd64.tar.gz
+
+# Add Go to PATH
+echo 'export PATH=$PATH:/usr/local/go/bin' | sudo tee -a /etc/profile
+source /etc/profile
+
+# Install xdocker
+git clone https://github.com/tluyben/xdocker.git
+cd xdocker
+make install
+
 echo "Installation completed successfully."
 `
 type XDockerConfig struct {
