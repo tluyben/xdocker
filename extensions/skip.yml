@@ -1,0 +1,10 @@
+name: skip
+required: false
+path: /$service/skip
+arguments:
+  shouldSkip:
+    type: bool
+    description: skip this service
+    required: true
+generate: |
+  {{if (shouldSkip) then "profiles:\n  - donotstart\n" else ""}}
