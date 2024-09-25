@@ -1,15 +1,21 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 
+	"github.com/joho/godotenv"
+	feel "github.com/superisaac/FEEL.go"
 	"golang.org/x/crypto/ssh"
+	"gopkg.in/yaml.v2"
 )
 
 const installScript = `#!/bin/bash
@@ -54,14 +60,35 @@ sudo -u ubuntu newgrp docker
 
 echo "Installation completed successfully."
 `
+type XDockerConfig struct {
+	Version  string                 `yaml:"version"`
+	Services map[string]interface{} `yaml:"services"`
+	Extend   string                 `yaml:"extend,omitempty"`
+}
+
 
 func main() {
 	installCmd := flag.NewFlagSet("install", flag.ExitOnError)
+	upCmd := flag.NewFlagSet("up", flag.ExitOnError)
+	downCmd := flag.NewFlagSet("down", flag.ExitOnError)
+
+	// Install command flags
 	remoteHosts := installCmd.String("hosts", "", "Comma-separated list of user@host")
 	identityFile := installCmd.String("i", "", "Path to identity file")
 
+	// Up command flags
+	upDetach := upCmd.Bool("d", false, "Detached mode")
+	upKeepOrphans := upCmd.Bool("keep-orphans", false, "Keep containers for services not defined in the compose file")
+	upNoBuild := upCmd.Bool("no-build", false, "Don't build images before starting containers")
+
+	// Down command flags
+	downKeepOrphans := downCmd.Bool("keep-orphans", false, "Keep containers for services not defined in the compose file")
+
+	// Global flag
+	composeFile := flag.String("f", "xdocker-compose.yml", "Path to xdocker compose file")
+
 	if len(os.Args) < 2 {
-		fmt.Println("Expected 'install' subcommand")
+		fmt.Println("Expected 'install', 'up', or 'down' subcommands")
 		os.Exit(1)
 	}
 
@@ -73,8 +100,14 @@ func main() {
 		} else {
 			remoteInstall(*remoteHosts, *identityFile)
 		}
+	case "up":
+		upCmd.Parse(os.Args[2:])
+		up(*composeFile, *upDetach, !*upKeepOrphans, !*upNoBuild, upCmd.Args())
+	case "down":
+		downCmd.Parse(os.Args[2:])
+		down(*composeFile, !*downKeepOrphans, downCmd.Args())
 	default:
-		fmt.Println("Expected 'install' subcommand")
+		fmt.Println("Expected 'install', 'up', or 'down' subcommands")
 		os.Exit(1)
 	}
 }
@@ -162,5 +195,315 @@ func remoteInstall(hosts string, identityFile string) {
 		} else {
 			fmt.Printf("Installation completed successfully on %s\n", host)
 		}
+	}
+	
+}
+
+func up(composeFile string, detach, removeOrphans, build bool, services []string) {
+	dockerComposeFile, err := processXDockerFile(composeFile)
+	if err != nil {
+		fmt.Printf("Error processing xdocker file: %v\n", err)
+		os.Exit(1)
+	}
+
+	args := []string{"-f", dockerComposeFile, "up"}
+	if detach {
+		args = append(args, "-d")
+	}
+	if removeOrphans {
+		args = append(args, "--remove-orphans")
+	}
+	if build {
+		args = append(args, "--build")
+	}
+	args = append(args, services...)
+
+	err = runDockerCompose(args...)
+	if err != nil {
+		fmt.Printf("Error running docker-compose up: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func down(composeFile string, removeOrphans bool, services []string) {
+	dockerComposeFile, err := processXDockerFile(composeFile)
+	if err != nil {
+		fmt.Printf("Error processing xdocker file: %v\n", err)
+		os.Exit(1)
+	}
+
+	args := []string{"-f", dockerComposeFile, "down"}
+	if removeOrphans {
+		args = append(args, "--remove-orphans")
+	}
+	args = append(args, services...)
+
+	err = runDockerCompose(args...)
+	if err != nil {
+		fmt.Printf("Error running docker-compose down: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func runDockerCompose(args ...string) error {
+	cmd := exec.Command("docker-compose", args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	err := cmd.Run()
+	if err != nil {
+		// Check if the error is due to container already existing
+		if strings.Contains(err.Error(), "already exists") {
+			fmt.Println("Container already exists. Removing and trying again...")
+			removeArgs := append([]string{"-f", args[1], "rm", "-f"}, args[len(args)-1])
+			removeCmd := exec.Command("docker-compose", removeArgs...)
+			removeCmd.Stdout = os.Stdout
+			removeCmd.Stderr = os.Stderr
+			err = removeCmd.Run()
+			if err != nil {
+				return fmt.Errorf("error removing existing container: %v", err)
+			}
+			// Try the original command again
+			return runDockerCompose(args...)
+		}
+		return err
+	}
+	return nil
+}
+
+func processXDockerFile(inputFile string) (string, error) {
+	// Load .env file
+	envFile := filepath.Join(filepath.Dir(inputFile), ".env")
+	err := godotenv.Load(envFile)
+	if err != nil && !os.IsNotExist(err) {
+		return "", fmt.Errorf("error loading .env file: %v", err)
+	}
+
+	config, err := readAndMergeConfigs(inputFile)
+	if err != nil {
+		return "", fmt.Errorf("error processing xdocker files: %v", err)
+	}
+
+	// Resolve all environment variables and expressions in the config
+	err = resolveAllEnvVariablesAndExpressions(config)
+	if err != nil {
+		return "", fmt.Errorf("error resolving environment variables and expressions: %v", err)
+	}
+
+	// Process custom instructions here
+	err = processCustomInstructions(config)
+	if err != nil {
+		return "", fmt.Errorf("error processing custom instructions: %v", err)
+	}
+
+	outputFile := fmt.Sprintf("docker-compose-%s.yml", filepath.Base(inputFile))
+	outputData, err := yaml.Marshal(config)
+	if err != nil {
+		return "", fmt.Errorf("error generating docker-compose file: %v", err)
+	}
+
+	err = ioutil.WriteFile(outputFile, outputData, 0644)
+	if err != nil {
+		return "", fmt.Errorf("error writing docker-compose file: %v", err)
+	}
+
+	return outputFile, nil
+}
+
+func resolveAllEnvVariablesAndExpressions(config *XDockerConfig) error {
+	for serviceName, serviceConfig := range config.Services {
+		service := serviceConfig.(map[interface{}]interface{})
+		err := resolveEnvVariablesAndExpressionsInMap(service)
+		if err != nil {
+			return fmt.Errorf("error in service %s: %v", serviceName, err)
+		}
+		config.Services[serviceName] = service
+	}
+	return nil
+}
+
+func resolveEnvVariablesAndExpressionsInMap(m map[interface{}]interface{}) error {
+	for key, value := range m {
+		switch v := value.(type) {
+		case string:
+			resolved, err := resolveEnvVariablesAndExpressionsInString(v)
+			if err != nil {
+				return err
+			}
+			m[key] = resolved
+		case map[interface{}]interface{}:
+			err := resolveEnvVariablesAndExpressionsInMap(v)
+			if err != nil {
+				return err
+			}
+		case []interface{}:
+			err := resolveEnvVariablesAndExpressionsInSlice(v)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func resolveEnvVariablesAndExpressionsInSlice(s []interface{}) error {
+	for i, value := range s {
+		switch v := value.(type) {
+		case string:
+			resolved, err := resolveEnvVariablesAndExpressionsInString(v)
+			if err != nil {
+				return err
+			}
+			s[i] = resolved
+		case map[interface{}]interface{}:
+			err := resolveEnvVariablesAndExpressionsInMap(v)
+			if err != nil {
+				return err
+			}
+		case []interface{}:
+			err := resolveEnvVariablesAndExpressionsInSlice(v)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func resolveEnvVariablesAndExpressionsInString(s string) (string, error) {
+	// First, resolve environment variables
+	reEnv := regexp.MustCompile(`\$(\w+)|\$\{(\w+)\}`)
+	s = reEnv.ReplaceAllStringFunc(s, func(match string) string {
+		varName := match[1:] // Remove the leading $
+		if varName[0] == '{' {
+			varName = varName[1 : len(varName)-1] // Remove { and }
+		}
+		if value, exists := os.LookupEnv(varName); exists {
+			return value
+		}
+		return match // Return original if not found
+	})
+
+	// Then, evaluate expressions
+	reExpr := regexp.MustCompile(`\{\{(.+?)\}\}`)
+	return reExpr.ReplaceAllStringFunc(s, func(match string) string {
+		expr := match[2 : len(match)-2] // Remove {{ and }}
+		res, err := feel.EvalString(expr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Expression evaluation error: %s\n", err)
+			return match // Return original if evaluation fails
+		}
+		return convertToString(res)
+	}), nil
+}
+
+func convertToString(v interface{}) string {
+	switch value := v.(type) {
+	case string:
+		return value
+	case bool:
+		return strconv.FormatBool(value)
+	case int:
+		return strconv.Itoa(value)
+	case float64:
+		return strconv.FormatFloat(value, 'f', -1, 64)
+	default:
+		bytes, err := json.Marshal(v)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error converting value to string: %v\n", err)
+			return fmt.Sprintf("%v", v)
+		}
+		return string(bytes)
+	}
+}
+
+func processCustomInstructions(config *XDockerConfig) error {
+	for serviceName, serviceConfig := range config.Services {
+		service := serviceConfig.(map[interface{}]interface{})
+		
+		// Process the 'skip' property
+		if skip, ok := service["skip"]; ok {
+			delete(service, "skip")
+			skipValue := fmt.Sprintf("%v", skip)
+			if skipValue == "true" || skipValue == "yes" {
+				service["profiles"] = []string{"donotstart"}
+			}
+		}
+
+		// Add more custom instruction processing here
+
+		config.Services[serviceName] = service
+	}
+
+	return nil
+}
+func mergeConfigs(parent, child *XDockerConfig) {
+	if child.Version == "" {
+		child.Version = parent.Version
+	}
+
+	for serviceName, serviceConfig := range parent.Services {
+		if _, exists := child.Services[serviceName]; !exists {
+			child.Services[serviceName] = serviceConfig
+		} else {
+			// Merge service configurations
+			parentService := serviceConfig.(map[interface{}]interface{})
+			childService := child.Services[serviceName].(map[interface{}]interface{})
+			for key, value := range parentService {
+				if _, exists := childService[key]; !exists {
+					childService[key] = value
+				}
+			}
+		}
+	}
+
+	// Remove the 'extend' field as it's not valid in docker-compose
+	child.Extend = ""
+}
+
+
+func readAndMergeConfigsRecursive(inputFile string, visited map[string]bool) (*XDockerConfig, error) {
+	if visited[inputFile] {
+		return nil, fmt.Errorf("circular dependency detected in file: %s", inputFile)
+	}
+	visited[inputFile] = true
+
+	data, err := ioutil.ReadFile(inputFile)
+	if err != nil {
+		return nil, fmt.Errorf("error reading xdocker file %s: %v", inputFile, err)
+	}
+
+	var config XDockerConfig
+	err = yaml.Unmarshal(data, &config)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing xdocker file %s: %v", inputFile, err)
+	}
+
+	if config.Extend != "" {
+		extendFile := filepath.Join(filepath.Dir(inputFile), config.Extend)
+		parentConfig, err := readAndMergeConfigsRecursive(extendFile, visited)
+		if err != nil {
+			return nil, err
+		}
+		mergeConfigs(parentConfig, &config)
+	}
+
+	return &config, nil
+}
+func readAndMergeConfigs(inputFile string) (*XDockerConfig, error) {
+	visited := make(map[string]bool)
+	return readAndMergeConfigsRecursive(inputFile, visited)
+}
+
+
+func expandEnvVariables(config *XDockerConfig) {
+	for serviceName, serviceConfig := range config.Services {
+		service := serviceConfig.(map[interface{}]interface{})
+		for key, value := range service {
+			if strValue, ok := value.(string); ok {
+				service[key] = os.ExpandEnv(strValue)
+			}
+		}
+		config.Services[serviceName] = service
 	}
 }
