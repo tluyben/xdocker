@@ -65,6 +65,21 @@ type XDockerConfig struct {
 	Services map[string]interface{} `yaml:"services"`
 	Extend   string                 `yaml:"extend,omitempty"`
 }
+type Extension struct {
+	Name      string               `yaml:"name"`
+	Required  bool                 `yaml:"required"`
+	Path      string               `yaml:"path"`
+	Arguments map[string]Argument  `yaml:"arguments"`
+	Generate  string               `yaml:"generate"`
+}
+
+type Argument struct {
+	Type        string `yaml:"type"`
+	Description string `yaml:"description"`
+	Required    bool   `yaml:"required"`
+}
+
+var extensions map[string]Extension
 
 
 func main() {
@@ -92,22 +107,29 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := loadExtensions(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading extensions: %v\n", err)
+		os.Exit(1)
+	}
+
+	var err error
 	switch os.Args[1] {
 	case "install":
 		installCmd.Parse(os.Args[2:])
-		if *remoteHosts == "" {
-			localInstall()
-		} else {
-			remoteInstall(*remoteHosts, *identityFile)
-		}
+		err = run("install", *composeFile, *remoteHosts, *identityFile, false, false, false, nil)
 	case "up":
 		upCmd.Parse(os.Args[2:])
-		up(*composeFile, *upDetach, !*upKeepOrphans, !*upNoBuild, upCmd.Args())
+		err = run("up", *composeFile, "", "", *upDetach, !*upKeepOrphans, !*upNoBuild, upCmd.Args())
 	case "down":
 		downCmd.Parse(os.Args[2:])
-		down(*composeFile, !*downKeepOrphans, downCmd.Args())
+		err = run("down", *composeFile, "", "", false, !*downKeepOrphans, false, downCmd.Args())
 	default:
 		fmt.Println("Expected 'install', 'up', or 'down' subcommands")
+		os.Exit(1)
+	}
+
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -328,7 +350,7 @@ func resolveEnvVariablesAndExpressionsInMap(m map[interface{}]interface{}) error
 		case string:
 			resolved, err := resolveEnvVariablesAndExpressionsInString(v)
 			if err != nil {
-				return err
+				return fmt.Errorf("error resolving value for key '%v': %v", key, err)
 			}
 			m[key] = resolved
 		case map[interface{}]interface{}:
@@ -352,7 +374,7 @@ func resolveEnvVariablesAndExpressionsInSlice(s []interface{}) error {
 		case string:
 			resolved, err := resolveEnvVariablesAndExpressionsInString(v)
 			if err != nil {
-				return err
+				return fmt.Errorf("error resolving value at index %d: %v", i, err)
 			}
 			s[i] = resolved
 		case map[interface{}]interface{}:
@@ -373,6 +395,7 @@ func resolveEnvVariablesAndExpressionsInSlice(s []interface{}) error {
 func resolveEnvVariablesAndExpressionsInString(s string) (string, error) {
 	// First, resolve environment variables
 	reEnv := regexp.MustCompile(`\$(\w+)|\$\{(\w+)\}`)
+	var missingVars []string
 	s = reEnv.ReplaceAllStringFunc(s, func(match string) string {
 		varName := match[1:] // Remove the leading $
 		if varName[0] == '{' {
@@ -381,8 +404,13 @@ func resolveEnvVariablesAndExpressionsInString(s string) (string, error) {
 		if value, exists := os.LookupEnv(varName); exists {
 			return value
 		}
-		return match // Return original if not found
+		missingVars = append(missingVars, varName)
+		return match // Keep original for error reporting
 	})
+
+	if len(missingVars) > 0 {
+		return "", fmt.Errorf("missing required environment variables: %s", strings.Join(missingVars, ", "))
+	}
 
 	// Then, evaluate expressions
 	reExpr := regexp.MustCompile(`\{\{(.+?)\}\}`)
@@ -417,26 +445,26 @@ func convertToString(v interface{}) string {
 	}
 }
 
-func processCustomInstructions(config *XDockerConfig) error {
-	for serviceName, serviceConfig := range config.Services {
-		service := serviceConfig.(map[interface{}]interface{})
+// func processCustomInstructions(config *XDockerConfig) error {
+// 	for serviceName, serviceConfig := range config.Services {
+// 		service := serviceConfig.(map[interface{}]interface{})
 		
-		// Process the 'skip' property
-		if skip, ok := service["skip"]; ok {
-			delete(service, "skip")
-			skipValue := fmt.Sprintf("%v", skip)
-			if skipValue == "true" || skipValue == "yes" {
-				service["profiles"] = []string{"donotstart"}
-			}
-		}
+// 		// Process the 'skip' property
+// 		if skip, ok := service["skip"]; ok {
+// 			delete(service, "skip")
+// 			skipValue := fmt.Sprintf("%v", skip)
+// 			if skipValue == "true" || skipValue == "yes" {
+// 				service["profiles"] = []string{"donotstart"}
+// 			}
+// 		}
 
-		// Add more custom instruction processing here
+// 		// Add more custom instruction processing here
 
-		config.Services[serviceName] = service
-	}
+// 		config.Services[serviceName] = service
+// 	}
 
-	return nil
-}
+// 	return nil
+// }
 func mergeConfigs(parent, child *XDockerConfig) {
 	if child.Version == "" {
 		child.Version = parent.Version
@@ -496,14 +524,133 @@ func readAndMergeConfigs(inputFile string) (*XDockerConfig, error) {
 }
 
 
-func expandEnvVariables(config *XDockerConfig) {
+// func expandEnvVariables(config *XDockerConfig) {
+// 	for serviceName, serviceConfig := range config.Services {
+// 		service := serviceConfig.(map[interface{}]interface{})
+// 		for key, value := range service {
+// 			if strValue, ok := value.(string); ok {
+// 				service[key] = os.ExpandEnv(strValue)
+// 			}
+// 		}
+// 		config.Services[serviceName] = service
+// 	}
+// }
+
+func run(command, composeFile, remoteHosts, identityFile string, detach, removeOrphans, build bool, services []string) error {
+	switch command {
+	case "install":
+		if remoteHosts == "" {
+			localInstall()
+		} else {
+			remoteInstall(remoteHosts, identityFile)
+		}
+	case "up", "down":
+		dockerComposeFile, err := processXDockerFile(composeFile)
+		if err != nil {
+			return fmt.Errorf("error processing xdocker file: %v", err)
+		}
+
+		args := []string{"-f", dockerComposeFile, command}
+		if command == "up" {
+			if detach {
+				args = append(args, "-d")
+			}
+			if build {
+				args = append(args, "--build")
+			}
+		}
+		if removeOrphans {
+			args = append(args, "--remove-orphans")
+		}
+		args = append(args, services...)
+
+		err = runDockerCompose(args...)
+		if err != nil {
+			return fmt.Errorf("error running docker-compose %s: %v", command, err)
+		}
+	}
+
+	return nil
+}
+
+func loadExtensions() error {
+	extensions = make(map[string]Extension)
+	extensionsDir := "./extensions"
+	files, err := ioutil.ReadDir(extensionsDir)
+	if err != nil {
+		return fmt.Errorf("error reading extensions directory: %v", err)
+	}
+	for _, file := range files {
+		if filepath.Ext(file.Name()) == ".yml" {
+			filePath := filepath.Join(extensionsDir, file.Name())
+			data, err := ioutil.ReadFile(filePath)
+			if err != nil {
+				return fmt.Errorf("error reading extension file %s: %v", file.Name(), err)
+			}
+			var ext Extension
+			err = yaml.Unmarshal(data, &ext)
+			if err != nil {
+				return fmt.Errorf("error parsing extension file %s: %v", file.Name(), err)
+			}
+			extensions[ext.Name] = ext
+		}
+	}
+	return nil
+}
+
+func processCustomInstructions(config *XDockerConfig) error {
 	for serviceName, serviceConfig := range config.Services {
 		service := serviceConfig.(map[interface{}]interface{})
-		for key, value := range service {
-			if strValue, ok := value.(string); ok {
-				service[key] = os.ExpandEnv(strValue)
+		
+		for extName, ext := range extensions {
+			if strings.HasPrefix(ext.Path, "/$service/") {
+				key := strings.TrimPrefix(ext.Path, "/$service/")
+				if value, ok := service[key]; ok {
+					result, err := processExtension(ext, fmt.Sprintf("%v", value))
+					if err != nil {
+						return fmt.Errorf("error processing extension %s for service %s: %v", extName, serviceName, err)
+					}
+					delete(service, key)
+					if result != "" {
+						var resultMap map[string]interface{}
+						err = yaml.Unmarshal([]byte(result), &resultMap)
+						if err != nil {
+							return fmt.Errorf("error parsing extension result for %s: %v", extName, err)
+						}
+						for k, v := range resultMap {
+							service[k] = v
+						}
+					}
+				}
 			}
 		}
 		config.Services[serviceName] = service
 	}
+	return nil
+}
+func processExtension(ext Extension, value string) (string, error) {
+	var bindStatements []string
+	for argName, arg := range ext.Arguments {
+		var bindExpr string
+		switch arg.Type {
+		case "bool":
+			bindExpr = fmt.Sprintf("bind(\"%s\", '%s' === \"true\" || '%s' === \"1\" || '%s' === \"yes\");", argName, value, value, value)
+		case "int":
+			bindExpr = fmt.Sprintf("bind(\"%s\", number('%s'));", argName, value)
+		case "float":
+			bindExpr = fmt.Sprintf("bind(\"%s\", number('%s'));", argName, value)
+		default: // string
+			bindExpr = fmt.Sprintf("bind(\"%s\", '%s');", argName, value)
+		}
+		bindStatements = append(bindStatements, bindExpr)
+	}
+
+	fullExpression := strings.Join(bindStatements, "\n") + "\n" + ext.Generate
+
+	result, err := feel.EvalString(fullExpression)
+	if err != nil {
+		return "", fmt.Errorf("error evaluating extension generate expression: %v", err)
+	}
+
+	return fmt.Sprintf("%v", result), nil
 }
