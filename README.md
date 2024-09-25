@@ -31,6 +31,12 @@ xdocker is an extended Docker Compose wrapper that provides additional functiona
    go build -o xdocker
    ```
 
+   or
+
+   ```
+   make
+   ```
+
 4. (Optional) Move the binary to a directory in your PATH for easy access:
    ```
    sudo mv xdocker /usr/local/bin/
