@@ -81,11 +81,14 @@ type Argument struct {
 
 var extensions map[string]Extension
 
-
 func main() {
 	installCmd := flag.NewFlagSet("install", flag.ExitOnError)
 	upCmd := flag.NewFlagSet("up", flag.ExitOnError)
 	downCmd := flag.NewFlagSet("down", flag.ExitOnError)
+	psCmd := flag.NewFlagSet("ps", flag.ExitOnError)
+	iexecCmd := flag.NewFlagSet("iexec", flag.ExitOnError)
+	execCmd := flag.NewFlagSet("exec", flag.ExitOnError)
+
 
 	// Install command flags
 	remoteHosts := installCmd.String("hosts", "", "Comma-separated list of user@host")
@@ -103,7 +106,7 @@ func main() {
 	composeFile := flag.String("f", "xdocker-compose.yml", "Path to xdocker compose file")
 
 	if len(os.Args) < 2 {
-		fmt.Println("Expected 'install', 'up', or 'down' subcommands")
+		fmt.Println("Expected 'install', 'up', 'down', 'ps', 'iexec', or 'exec' subcommands")
 		os.Exit(1)
 	}
 
@@ -112,7 +115,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	var err error
+		var err error
 	switch os.Args[1] {
 	case "install":
 		installCmd.Parse(os.Args[2:])
@@ -123,8 +126,25 @@ func main() {
 	case "down":
 		downCmd.Parse(os.Args[2:])
 		err = run("down", *composeFile, "", "", false, !*downKeepOrphans, false, downCmd.Args())
+	case "ps":
+		psCmd.Parse(os.Args[2:])
+		err = runPs(*composeFile)
+	case "iexec":
+		iexecCmd.Parse(os.Args[2:])
+		if iexecCmd.NArg() < 1 {
+			fmt.Println("iexec requires a container name or service name")
+			os.Exit(1)
+		}
+		err = runIExec(*composeFile, iexecCmd.Arg(0))
+	case "exec":
+		execCmd.Parse(os.Args[2:])
+		if execCmd.NArg() < 2 {
+			fmt.Println("exec requires a container name or service name and a command")
+			os.Exit(1)
+		}
+		err = runExec(*composeFile, execCmd.Arg(0), execCmd.Args()[1:])
 	default:
-		fmt.Println("Expected 'install', 'up', or 'down' subcommands")
+		fmt.Println("Expected 'install', 'up', 'down', 'ps', 'iexec', or 'exec' subcommands")
 		os.Exit(1)
 	}
 
@@ -653,4 +673,74 @@ func processExtension(ext Extension, value string) (string, error) {
 	}
 
 	return fmt.Sprintf("%v", result), nil
+}
+
+func runPs(composeFile string) error {
+	cmd := exec.Command("docker-compose", "-f", composeFile, "ps")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func runIExec(composeFile, containerOrService string) error {
+	containerName, err := getContainerName(composeFile, containerOrService)
+	if err != nil {
+		return err
+	}
+
+	shell := "/bin/bash"
+	if !shellExists(containerName, shell) {
+		shell = "/bin/sh"
+	}
+
+	cmd := exec.Command("docker", "exec", "-it", containerName, shell)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func runExec(composeFile, containerOrService string, command []string) error {
+	containerName, err := getContainerName(composeFile, containerOrService)
+	if err != nil {
+		return err
+	}
+
+	args := append([]string{"exec", "-t", containerName}, command...)
+	cmd := exec.Command("docker", args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func getContainerName(composeFile, containerOrService string) (string, error) {
+	// First, check if it's a valid container name
+	if containerExists(containerOrService) {
+		return containerOrService, nil
+	}
+
+	// If not, try to get the container name from the service name
+	cmd := exec.Command("docker-compose", "-f", composeFile, "ps", "-q", containerOrService)
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("error getting container name: %v", err)
+	}
+
+	containerName := strings.TrimSpace(string(output))
+	if containerName == "" {
+		return "", fmt.Errorf("no container found for service: %s", containerOrService)
+	}
+
+	return containerName, nil
+}
+
+func containerExists(containerName string) bool {
+	cmd := exec.Command("docker", "inspect", containerName)
+	return cmd.Run() == nil
+}
+
+func shellExists(containerName, shell string) bool {
+	cmd := exec.Command("docker", "exec", containerName, "which", shell)
+	return cmd.Run() == nil
 }
