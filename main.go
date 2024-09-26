@@ -694,7 +694,12 @@ func processExtension(ext Extension, value string) (string, error) {
 		bindStatements = append(bindStatements, bindExpr)
 	}
 
-	fullExpression := strings.Join(bindStatements, "\n") + "\n" + ext.Generate
+	// Remove {{}} from the generate expression
+	generateExpr := strings.TrimSpace(ext.Generate)
+	generateExpr = strings.TrimPrefix(generateExpr, "{{")
+	generateExpr = strings.TrimSuffix(generateExpr, "}}")
+
+	fullExpression := strings.Join(bindStatements, "\n") + "\n" + generateExpr
 
 	result, err := feel.EvalString(fullExpression)
 	if err != nil {
