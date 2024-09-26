@@ -76,8 +76,9 @@ make install
 echo "Installation completed successfully."
 `
 type XDockerConfig struct {
-	Version  string                 `yaml:"version"`
+	Version  string                 `yaml:"version,omitempty"`
 	Services map[string]interface{} `yaml:"services"`
+	Networks map[string]interface{} `yaml:"networks,omitempty"`
 	Extend   string                 `yaml:"extend,omitempty"`
 }
 type Extension struct {
@@ -368,8 +369,10 @@ func processXDockerFile(inputFile string) (string, error) {
 		return "", fmt.Errorf("error processing custom instructions: %v", err)
 	}
 
+	config.Version = ""
+
 	outputFile := fmt.Sprintf("docker-compose-%s.yml", filepath.Base(inputFile))
-	outputData, err := yaml.Marshal(config)
+	outputData, err := customMarshal(config)
 	if err != nil {
 		return "", fmt.Errorf("error generating docker-compose file: %v", err)
 	}
@@ -534,6 +537,14 @@ func mergeConfigs(parent, child *XDockerConfig) {
 			}
 		}
 	}
+	if child.Networks == nil {
+        child.Networks = make(map[string]interface{})
+    }
+    for networkName, networkConfig := range parent.Networks {
+        if _, exists := child.Networks[networkName]; !exists {
+            child.Networks[networkName] = networkConfig
+        }
+    }
 
 	// Remove the 'extend' field as it's not valid in docker-compose
 	child.Extend = ""
@@ -621,6 +632,10 @@ func run(command, composeFile, remoteHosts, identityFile string, detach, removeO
 	}
 
 	return nil
+}
+
+func customMarshal(in interface{}) ([]byte, error) {
+    return yaml.Marshal(in)
 }
 
 func loadExtensions() error {
