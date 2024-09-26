@@ -514,6 +514,7 @@ func processXDockerFile(inputFile string, tailscaleIP, localhost bool) (string, 
 	}
 
 	config.Version = ""
+	config.Args = ""
 
 	if tailscaleIP || localhost {
 		err = modifyPortMappings(config, tailscaleIP)
