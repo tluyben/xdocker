@@ -7,6 +7,7 @@ GOGET=$(GOCMD) get
 GOMOD=$(GOCMD) mod
 BINARY_NAME=xdocker
 BINARY_UNIX=$(BINARY_NAME)_unix
+GLOBAL_EXTENSIONS_DIR=/usr/local/share/xdocker/extensions
 
 all: test build
 
@@ -39,9 +40,14 @@ build-linux:
 docker-build:
 	docker run --rm -it -v "$(PWD)":/usr/src/myapp -w /usr/src/myapp golang:1.16 make build
 
-# Installs the binary to /usr/local/bin/
+# Installs the binary to /usr/local/bin/ and sets up the global extensions directory
 install: build
-	mv $(BINARY_NAME) /usr/local/bin/
+	sudo mv $(BINARY_NAME) /usr/local/bin/
+	sudo mkdir -p $(GLOBAL_EXTENSIONS_DIR)
+	sudo chmod 755 $(GLOBAL_EXTENSIONS_DIR)
+	if [ -d "./extensions" ]; then \
+		sudo cp -R ./extensions/* $(GLOBAL_EXTENSIONS_DIR)/; \
+	fi
 
 # Updates Go modules
 update:

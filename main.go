@@ -29,7 +29,7 @@ sudo apt-add-repository -y ppa:ansible/ansible
 
 # update system 
 sudo apt update
-sudo apt install -y apt-transport-https ca-certificates curl software-properties-common vim openssh-client lynx jq unzip net-tools apache2-utils curl lynx openssl fail2ban
+sudo apt install -y apt-transport-https ca-certificates curl software-properties-common vim openssh-client lynx jq unzip net-tools apache2-utils curl lynx openssl fail2ban make
 
 # create keys
 if [ ! -f "/root/.ssh/id_rsa" ]; then 
@@ -96,6 +96,14 @@ type Argument struct {
 
 var extensions map[string]Extension
 
+const (
+	defaultGlobalExtensionsDir = "/usr/local/share/xdocker/extensions"
+)
+
+var (
+	extensionsDir string
+)
+
 func main() {
 	installCmd := flag.NewFlagSet("install", flag.ExitOnError)
 	upCmd := flag.NewFlagSet("up", flag.ExitOnError)
@@ -119,6 +127,13 @@ func main() {
 
 	// Global flag
 	composeFile := flag.String("f", "xdocker-compose.yml", "Path to xdocker compose file")
+
+	// extensionsDir = defaultGlobalExtensionsDir
+	flag.StringVar(&extensionsDir, "extension-dir", "", "Custom extensions directory")
+	flag.Parse()
+	if extensionsDir == "" {
+		extensionsDir = defaultGlobalExtensionsDir
+	}
 
 	if len(os.Args) < 2 {
 		fmt.Println("Expected 'install', 'up', 'down', 'ps', 'iexec', or 'exec' subcommands")
@@ -610,10 +625,9 @@ func run(command, composeFile, remoteHosts, identityFile string, detach, removeO
 
 func loadExtensions() error {
 	extensions = make(map[string]Extension)
-	extensionsDir := "./extensions"
 	files, err := ioutil.ReadDir(extensionsDir)
 	if err != nil {
-		return fmt.Errorf("error reading extensions directory: %v", err)
+		return fmt.Errorf("error reading extensions directory %s: %v", extensionsDir, err)
 	}
 	for _, file := range files {
 		if filepath.Ext(file.Name()) == ".yml" {
