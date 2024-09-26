@@ -685,11 +685,19 @@ func processExtension(ext Extension, value string) (string, error) {
 		case "bool":
 			bindExpr = fmt.Sprintf("bind(\"%s\", \"%s\" = \"true\" or \"%s\" = \"1\" or \"%s\" = \"yes\");", argName, value, value, value)
 		case "int":
-			bindExpr = fmt.Sprintf("bind(\"%s\", number('%s'));", argName, value)
+			intValue, err := strconv.Atoi(value)
+			if err != nil {
+				return "", fmt.Errorf("error converting value to int: %v", err)
+			}
+			bindExpr = fmt.Sprintf("bind(\"%s\", %d);", argName, intValue)
 		case "float":
-			bindExpr = fmt.Sprintf("bind(\"%s\", number('%s'));", argName, value)
+			floatValue, err := strconv.ParseFloat(value, 64)
+			if err != nil {
+				return "", fmt.Errorf("error converting value to float: %v", err)
+			}
+			bindExpr = fmt.Sprintf("bind(\"%s\", %f);", argName, floatValue)
 		default: // string
-			bindExpr = fmt.Sprintf("bind(\"%s\", '%s');", argName, value)
+			bindExpr = fmt.Sprintf("bind(\"%s\", \"%s\");", argName, value)
 		}
 		bindStatements = append(bindStatements, bindExpr)
 	}
