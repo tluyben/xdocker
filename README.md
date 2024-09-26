@@ -16,7 +16,7 @@ xdocker is an extended Docker Compose wrapper that provides additional functiona
 1. Clone the repository:
 
    ```
-   git clone https://github.com/yourusername/xdocker.git
+   git clone https://github.com/tluyben/xdocker.git
    ```
 
 2. Navigate to the xdocker directory:
