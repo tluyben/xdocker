@@ -134,7 +134,7 @@ xdocker supports FEEL expressions enclosed in double curly braces:
 ```yaml
 services:
   myservice:
-    replicas: { { if ($ENV_PROD == "true") then 3 else 1 } }
+    replicas: { { if ($ENV_PROD = "true") then 3 else 1 } }
 ```
 
 ## Version Requirements

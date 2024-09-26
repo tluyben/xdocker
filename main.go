@@ -18,6 +18,59 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
+const dockerInstallScript = `#!/bin/bash
+set -e
+
+sudo apt-add-repository -y ppa:ansible/ansible
+
+# update system 
+sudo apt update
+sudo apt install -y apt-transport-https ca-certificates curl software-properties-common
+
+# install docker
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
+sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu focal stable"
+sudo apt install -y docker-ce
+
+sudo systemctl enable --now docker
+
+# install docker-compose 
+sudo curl -L "https://github.com/docker/compose/releases/download/v2.20.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+sudo chmod +x /usr/local/bin/docker-compose
+sudo cp /usr/local/bin/docker-compose /usr/local/sbin
+
+if ! id "ubuntu" &>/dev/null; then
+    sudo useradd -m -s /bin/bash ubuntu
+fi
+
+sudo usermod -aG docker ubuntu
+
+# Use sudo to run newgrp, which will exit immediately
+sudo -u ubuntu newgrp docker
+
+echo "Docker installation completed successfully."
+`
+
+const xDockerInstallScript = `#!/bin/bash
+set -e
+
+# Install Go 1.20.1
+GO_VERSION="1.20.1"
+wget https://golang.org/dl/go${GO_VERSION}.linux-amd64.tar.gz
+sudo tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz
+rm go${GO_VERSION}.linux-amd64.tar.gz
+
+# Add Go to PATH
+echo 'export PATH=$PATH:/usr/local/go/bin' | sudo tee -a /etc/profile
+source /etc/profile
+
+# Install xdocker
+git clone https://github.com/tluyben/xdocker.git
+cd xdocker
+make install
+
+echo "Go and xDocker installation completed successfully."
+`
 const installScript = `#!/bin/bash
 set -e
 
@@ -117,14 +170,20 @@ func main() {
 	// Install command flags
 	remoteHosts := installCmd.String("hosts", "", "Comma-separated list of user@host")
 	identityFile := installCmd.String("i", "", "Path to identity file")
+	onlyDocker := installCmd.Bool("only-docker", false, "Install only Docker")
+	onlyXDocker := installCmd.Bool("only-xdocker", false, "Install only Go and xDocker")
 
 	// Up command flags
 	upDetach := upCmd.Bool("d", false, "Detached mode")
 	upKeepOrphans := upCmd.Bool("keep-orphans", false, "Keep containers for services not defined in the compose file")
 	upNoBuild := upCmd.Bool("no-build", false, "Don't build images before starting containers")
+	upDry := upCmd.Bool("dry", false, "Only generate the docker-compose file without starting containers")
+	upTailscaleIP := upCmd.Bool("tailscale-ip", false, "Use Tailscale IP for exposed ports")
+	upLocalhost := upCmd.Bool("localhost", false, "Use localhost for exposed ports")
 
 	// Down command flags
 	downKeepOrphans := downCmd.Bool("keep-orphans", false, "Keep containers for services not defined in the compose file")
+	downDry := downCmd.Bool("dry", false, "Only generate the docker-compose file without stopping containers")
 
 	// Global flag
 	composeFile := flag.String("f", "xdocker-compose.yml", "Path to xdocker compose file")
@@ -150,13 +209,13 @@ func main() {
 	switch os.Args[1] {
 	case "install":
 		installCmd.Parse(os.Args[2:])
-		err = run("install", *composeFile, *remoteHosts, *identityFile, false, false, false, nil)
+		err = run("install", *composeFile, *remoteHosts, *identityFile, false, false, false, nil, *onlyDocker, *onlyXDocker, false, false, false)
 	case "up":
 		upCmd.Parse(os.Args[2:])
-		err = run("up", *composeFile, "", "", *upDetach, !*upKeepOrphans, !*upNoBuild, upCmd.Args())
+		err = run("up", *composeFile, "", "", *upDetach, !*upKeepOrphans, !*upNoBuild, upCmd.Args(), false, false, *upDry, *upTailscaleIP, *upLocalhost)
 	case "down":
 		downCmd.Parse(os.Args[2:])
-		err = run("down", *composeFile, "", "", false, !*downKeepOrphans, false, downCmd.Args())
+		err = run("down", *composeFile, "", "", false, !*downKeepOrphans, false, downCmd.Args(), false, false, *downDry, false, false)
 	case "ps":
 		psCmd.Parse(os.Args[2:])
 		err = runPs(*composeFile)
@@ -185,8 +244,17 @@ func main() {
 	}
 }
 
-func localInstall() {
-	cmd := exec.Command("bash", "-c", installScript)
+func localInstall(onlyDocker, onlyXDocker bool) {
+	var script string
+	if onlyDocker {
+		script = dockerInstallScript
+	} else if onlyXDocker {
+		script = xDockerInstallScript
+	} else {
+		script = installScript
+	}
+
+	cmd := exec.Command("bash", "-c", script)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -197,7 +265,7 @@ func localInstall() {
 	}
 }
 
-func remoteInstall(hosts string, identityFile string) {
+func remoteInstall(hosts string, identityFile string, onlyDocker, onlyXDocker bool) {
 	hostList := strings.Split(hosts, ",")
 
 	for _, host := range hostList {
@@ -262,7 +330,15 @@ func remoteInstall(hosts string, identityFile string) {
 		}
 		defer session.Close()
 
-		err = session.Run(installScript)
+		var script string
+		if onlyDocker {
+			script = dockerInstallScript
+		} else if onlyXDocker {
+			script = xDockerInstallScript
+		} else {
+			script = installScript
+		}
+		err = session.Run(script)
 		if err != nil {
 			fmt.Printf("Failed to run script on %s: %v\n", host, err)
 		} else {
@@ -272,51 +348,51 @@ func remoteInstall(hosts string, identityFile string) {
 	
 }
 
-func up(composeFile string, detach, removeOrphans, build bool, services []string) {
-	dockerComposeFile, err := processXDockerFile(composeFile)
-	if err != nil {
-		fmt.Printf("Error processing xdocker file: %v\n", err)
-		os.Exit(1)
-	}
+// func up(composeFile string, detach, removeOrphans, build bool, services []string) {
+// 	dockerComposeFile, err := processXDockerFile(composeFile)
+// 	if err != nil {
+// 		fmt.Printf("Error processing xdocker file: %v\n", err)
+// 		os.Exit(1)
+// 	}
 
-	args := []string{"-f", dockerComposeFile, "up"}
-	if detach {
-		args = append(args, "-d")
-	}
-	if removeOrphans {
-		args = append(args, "--remove-orphans")
-	}
-	if build {
-		args = append(args, "--build")
-	}
-	args = append(args, services...)
+// 	args := []string{"-f", dockerComposeFile, "up"}
+// 	if detach {
+// 		args = append(args, "-d")
+// 	}
+// 	if removeOrphans {
+// 		args = append(args, "--remove-orphans")
+// 	}
+// 	if build {
+// 		args = append(args, "--build")
+// 	}
+// 	args = append(args, services...)
 
-	err = runDockerCompose(args...)
-	if err != nil {
-		fmt.Printf("Error running docker-compose up: %v\n", err)
-		os.Exit(1)
-	}
-}
+// 	err = runDockerCompose(args...)
+// 	if err != nil {
+// 		fmt.Printf("Error running docker-compose up: %v\n", err)
+// 		os.Exit(1)
+// 	}
+// }
 
-func down(composeFile string, removeOrphans bool, services []string) {
-	dockerComposeFile, err := processXDockerFile(composeFile)
-	if err != nil {
-		fmt.Printf("Error processing xdocker file: %v\n", err)
-		os.Exit(1)
-	}
+// func down(composeFile string, removeOrphans bool, services []string) {
+// 	dockerComposeFile, err := processXDockerFile(composeFile)
+// 	if err != nil {
+// 		fmt.Printf("Error processing xdocker file: %v\n", err)
+// 		os.Exit(1)
+// 	}
 
-	args := []string{"-f", dockerComposeFile, "down"}
-	if removeOrphans {
-		args = append(args, "--remove-orphans")
-	}
-	args = append(args, services...)
+// 	args := []string{"-f", dockerComposeFile, "down"}
+// 	if removeOrphans {
+// 		args = append(args, "--remove-orphans")
+// 	}
+// 	args = append(args, services...)
 
-	err = runDockerCompose(args...)
-	if err != nil {
-		fmt.Printf("Error running docker-compose down: %v\n", err)
-		os.Exit(1)
-	}
-}
+// 	err = runDockerCompose(args...)
+// 	if err != nil {
+// 		fmt.Printf("Error running docker-compose down: %v\n", err)
+// 		os.Exit(1)
+// 	}
+// }
 
 func runDockerCompose(args ...string) error {
 	cmd := exec.Command("docker-compose", args...)
@@ -344,7 +420,7 @@ func runDockerCompose(args ...string) error {
 	return nil
 }
 
-func processXDockerFile(inputFile string) (string, error) {
+func processXDockerFile(inputFile string, tailscaleIP, localhost bool) (string, error) {
 	// Load .env file
 	envFile := filepath.Join(filepath.Dir(inputFile), ".env")
 	err := godotenv.Load(envFile)
@@ -371,6 +447,13 @@ func processXDockerFile(inputFile string) (string, error) {
 
 	config.Version = ""
 
+	if tailscaleIP || localhost {
+		err = modifyPortMappings(config, tailscaleIP)
+		if err != nil {
+			return "", fmt.Errorf("error modifying port mappings: %v", err)
+		}
+	}
+
 	outputFile := fmt.Sprintf("docker-compose-%s.yml", filepath.Base(inputFile))
 	outputData, err := customMarshal(config)
 	if err != nil {
@@ -385,6 +468,40 @@ func processXDockerFile(inputFile string) (string, error) {
 	return outputFile, nil
 }
 
+func modifyPortMappings(config *XDockerConfig, useTailscale bool) error {
+	var ip string
+	var err error
+
+	if useTailscale {
+		ip, err = getTailscaleIP()
+		if err != nil {
+			return fmt.Errorf("error getting Tailscale IP: %v", err)
+		}
+	} else {
+		ip = "127.0.0.1"
+	}
+
+	for _, serviceConfig := range config.Services {
+		service := serviceConfig.(map[interface{}]interface{})
+		if ports, ok := service["ports"].([]interface{}); ok {
+			for i, port := range ports {
+				portStr := port.(string)
+				parts := strings.Split(portStr, ":")
+				if len(parts) == 2 {
+					ports[i] = fmt.Sprintf("%s:%s:%s", ip, parts[0], parts[1])
+				} else if len(parts) == 3 {
+					ports[i] = fmt.Sprintf("%s:%s:%s", ip, parts[1], parts[2])
+				}
+			}
+			service["ports"] = ports
+		}
+	}
+
+	return nil
+}
+
+
+
 func resolveAllEnvVariablesAndExpressions(config *XDockerConfig) error {
 	for serviceName, serviceConfig := range config.Services {
 		service := serviceConfig.(map[interface{}]interface{})
@@ -396,7 +513,14 @@ func resolveAllEnvVariablesAndExpressions(config *XDockerConfig) error {
 	}
 	return nil
 }
-
+func getTailscaleIP() (string, error) {
+	cmd := exec.Command("tailscale", "ip", "--4")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("error executing tailscale command: %v", err)
+	}
+	return strings.TrimSpace(string(output)), nil
+}
 func resolveEnvVariablesAndExpressionsInMap(m map[interface{}]interface{}) error {
 	for key, value := range m {
 		switch v := value.(type) {
@@ -597,18 +721,23 @@ func readAndMergeConfigs(inputFile string) (*XDockerConfig, error) {
 // 	}
 // }
 
-func run(command, composeFile, remoteHosts, identityFile string, detach, removeOrphans, build bool, services []string) error {
+func run(command, composeFile, remoteHosts, identityFile string, detach, removeOrphans, build bool, services []string, onlyDocker, onlyXDocker, dry, tailscaleIP, localhost bool) error {
 	switch command {
 	case "install":
 		if remoteHosts == "" {
-			localInstall()
+			localInstall(onlyDocker, onlyXDocker)
 		} else {
-			remoteInstall(remoteHosts, identityFile)
+			remoteInstall(remoteHosts, identityFile, onlyDocker, onlyXDocker)
 		}
 	case "up", "down":
-		dockerComposeFile, err := processXDockerFile(composeFile)
+		dockerComposeFile, err := processXDockerFile(composeFile, tailscaleIP, localhost)
 		if err != nil {
 			return fmt.Errorf("error processing xdocker file: %v", err)
+		}
+
+		if dry {
+			fmt.Printf("Docker Compose file generated: %s\n", dockerComposeFile)
+			return nil
 		}
 
 		args := []string{"-f", dockerComposeFile, command}
