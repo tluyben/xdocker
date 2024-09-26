@@ -683,7 +683,7 @@ func processExtension(ext Extension, value string) (string, error) {
 		var bindExpr string
 		switch arg.Type {
 		case "bool":
-			bindExpr = fmt.Sprintf("bind(\"%s\", '%s' === \"true\" || '%s' === \"1\" || '%s' === \"yes\");", argName, value, value, value)
+			bindExpr = fmt.Sprintf("bind(\"%s\", \"%s\" = \"true\" or \"%s\" = \"1\" or \"%s\" = \"yes\");", argName, value, value, value)
 		case "int":
 			bindExpr = fmt.Sprintf("bind(\"%s\", number('%s'));", argName, value)
 		case "float":
@@ -699,7 +699,7 @@ func processExtension(ext Extension, value string) (string, error) {
 	generateExpr = strings.TrimPrefix(generateExpr, "{{")
 	generateExpr = strings.TrimSuffix(generateExpr, "}}")
 
-	fullExpression := strings.Join(bindStatements, "\n") + "\n" + generateExpr
+	fullExpression := strings.Join(bindStatements, "") + "" + generateExpr
 
 	result, err := feel.EvalString(fullExpression)
 	if err != nil {
