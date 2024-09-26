@@ -664,7 +664,7 @@ func processCustomInstructions(config *XDockerConfig) error {
 						var resultMap map[string]interface{}
 						err = yaml.Unmarshal([]byte(result), &resultMap)
 						if err != nil {
-							return fmt.Errorf("error parsing extension result for %s: %v", extName, err)
+							return fmt.Errorf("error parsing extension result for %s: %v\nResult:\n%s", extName, err, result)
 						}
 						for k, v := range resultMap {
 							service[k] = v
@@ -698,7 +698,7 @@ func processExtension(ext Extension, value string) (string, error) {
 
 	result, err := feel.EvalString(fullExpression)
 	if err != nil {
-		return "", fmt.Errorf("error evaluating extension generate expression: %v", err)
+		return "", fmt.Errorf("error evaluating extension generate expression: %v\nFull expression:\n%s", err, fullExpression)
 	}
 
 	return fmt.Sprintf("%v", result), nil
