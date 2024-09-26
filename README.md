@@ -13,6 +13,7 @@ xdocker is an extended Docker Compose wrapper that provides additional functiona
 - **Flexible Installation**: Options to install only Docker or only xdocker components.
 - **Dry Run**: Ability to generate Docker Compose files without starting containers.
 - **IP Address Binding**: Options to bind exposed ports to Tailscale IP or localhost.
+- **Default Arguments**: Ability to specify default arguments in the xdocker-compose file.
 
 ## Installation
 
@@ -150,6 +151,19 @@ services:
     image: myimage
     skip: true
 ```
+
+### Default Arguments
+
+You can specify default arguments in your xdocker-compose.yml file using the `args` property:
+
+```yaml
+version: "3"
+args: --tailscale-ip -d
+services:
+  # ... service definitions
+```
+
+These arguments will be applied by default when running `xdocker up` or `xdocker down`. You can still override these arguments by specifying them on the command line.
 
 ## Environment Variables
 

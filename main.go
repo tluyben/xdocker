@@ -146,6 +146,7 @@ type XDockerConfig struct {
 	Services map[string]interface{} `yaml:"services"`
 	Networks map[string]interface{} `yaml:"networks,omitempty"`
 	Extend   string                 `yaml:"extend,omitempty"`
+	Args     string                 `yaml:"args,omitempty"`
 }
 type Extension struct {
 	Name      string               `yaml:"name"`
@@ -234,9 +235,49 @@ func main() {
 		err = run("install", *composeFile, *remoteHosts, *identityFile, false, false, false, nil, *onlyDocker, *onlyXDocker, false, false, false, tailscaleAuthKey)
 	case "up":
 		upCmd.Parse(os.Args[2:])
+		var config *XDockerConfig
+		config, err = readAndMergeConfigs(*composeFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr,"error reading xdocker file: %v", err)
+			os.Exit(1)
+		}
+
+		// Parse additional arguments from the config
+		var configArgs []string
+		if config.Args != "" {
+			configArgs = strings.Fields(config.Args)
+			config.Args = "" // remove from the docker-compose file as it's not valid 
+		}
+
+		// Merge CLI args with config args
+		allArgs := append(configArgs, upCmd.Args()...)
+
+		// Process the merged arguments
+		upCmd.Parse(allArgs)
+
 		err = run("up", *composeFile, "", "", *upDetach, !*upKeepOrphans, !*upNoBuild, upCmd.Args(), false, false, *upDry, *upTailscaleIP, *upLocalhost, "")
 	case "down":
 		downCmd.Parse(os.Args[2:])
+		var config *XDockerConfig
+		config, err = readAndMergeConfigs(*composeFile)
+		if err != nil {
+			fmt.Printf("Error reading xdocker file: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Parse additional arguments from the config
+		var configArgs []string
+		if config.Args != "" {
+			configArgs = strings.Fields(config.Args)
+			config.Args = "" // remove from the docker-compose file as it's not valid
+		}
+
+		// Merge CLI args with config args
+		allArgs := append(configArgs, downCmd.Args()...)
+
+		// Process the merged arguments
+		downCmd.Parse(allArgs)
+		
 		err = run("down", *composeFile, "", "", false, !*downKeepOrphans, false, downCmd.Args(), false, false, *downDry, false, false, "")
 	case "ps":
 		psCmd.Parse(os.Args[2:])
@@ -749,6 +790,8 @@ func readAndMergeConfigs(inputFile string) (*XDockerConfig, error) {
 // }
 
 func run(command, composeFile, remoteHosts, identityFile string, detach, removeOrphans, build bool, services []string, onlyDocker, onlyXDocker, dry, tailscaleIP, localhost bool, tailscaleAuthKey string) error {
+
+
 	switch command {
 	case "install":
 		if remoteHosts == "" {
