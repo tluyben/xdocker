@@ -126,6 +126,19 @@ git clone https://github.com/tluyben/xdocker.git
 cd xdocker
 make install
 
+# Install Tailscale
+curl -fsSL https://tailscale.com/install.sh | sh
+
+# Configure Tailscale
+if [ -n "$TAILSCALE_AUTH_KEY" ]; then
+    echo "Tailscale auth key provided. Attempting to authenticate..."
+    sudo tailscale up --auth-key="$TAILSCALE_AUTH_KEY"
+else
+    echo "No Tailscale auth key provided. To authenticate, run:"
+    echo "sudo tailscale up"
+    echo "Then follow the prompts to authenticate."
+fi
+
 echo "Installation completed successfully."
 `
 type XDockerConfig struct {
@@ -172,6 +185,9 @@ func main() {
 	identityFile := installCmd.String("i", "", "Path to identity file")
 	onlyDocker := installCmd.Bool("only-docker", false, "Install only Docker")
 	onlyXDocker := installCmd.Bool("only-xdocker", false, "Install only Go and xDocker")
+	// Add Tailscale auth key flag
+	tailscaleAuthKeyFlag := installCmd.String("tailscale-auth-key", "", "Tailscale authentication key (can also be set via TAILSCALE_AUTH_KEY env var)")
+
 
 	// Up command flags
 	upDetach := upCmd.Bool("d", false, "Detached mode")
@@ -187,6 +203,8 @@ func main() {
 
 	// Global flag
 	composeFile := flag.String("f", "xdocker-compose.yml", "Path to xdocker compose file")
+
+
 
 	// extensionsDir = defaultGlobalExtensionsDir
 	flag.StringVar(&extensionsDir, "extension-dir", "", "Custom extensions directory")
@@ -209,13 +227,17 @@ func main() {
 	switch os.Args[1] {
 	case "install":
 		installCmd.Parse(os.Args[2:])
-		err = run("install", *composeFile, *remoteHosts, *identityFile, false, false, false, nil, *onlyDocker, *onlyXDocker, false, false, false)
+		tailscaleAuthKey := *tailscaleAuthKeyFlag
+		if tailscaleAuthKey == "" {
+			tailscaleAuthKey = os.Getenv("TAILSCALE_AUTH_KEY")
+		}
+		err = run("install", *composeFile, *remoteHosts, *identityFile, false, false, false, nil, *onlyDocker, *onlyXDocker, false, false, false, tailscaleAuthKey)
 	case "up":
 		upCmd.Parse(os.Args[2:])
-		err = run("up", *composeFile, "", "", *upDetach, !*upKeepOrphans, !*upNoBuild, upCmd.Args(), false, false, *upDry, *upTailscaleIP, *upLocalhost)
+		err = run("up", *composeFile, "", "", *upDetach, !*upKeepOrphans, !*upNoBuild, upCmd.Args(), false, false, *upDry, *upTailscaleIP, *upLocalhost, "")
 	case "down":
 		downCmd.Parse(os.Args[2:])
-		err = run("down", *composeFile, "", "", false, !*downKeepOrphans, false, downCmd.Args(), false, false, *downDry, false, false)
+		err = run("down", *composeFile, "", "", false, !*downKeepOrphans, false, downCmd.Args(), false, false, *downDry, false, false, "")
 	case "ps":
 		psCmd.Parse(os.Args[2:])
 		err = runPs(*composeFile)
@@ -244,7 +266,7 @@ func main() {
 	}
 }
 
-func localInstall(onlyDocker, onlyXDocker bool) {
+func localInstall(onlyDocker, onlyXDocker bool, tailscaleAuthKey string) {
 	var script string
 	if onlyDocker {
 		script = dockerInstallScript
@@ -255,6 +277,8 @@ func localInstall(onlyDocker, onlyXDocker bool) {
 	}
 
 	cmd := exec.Command("bash", "-c", script)
+	cmd.Env = append(os.Environ(), fmt.Sprintf("TAILSCALE_AUTH_KEY=%s", tailscaleAuthKey))
+
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -265,7 +289,7 @@ func localInstall(onlyDocker, onlyXDocker bool) {
 	}
 }
 
-func remoteInstall(hosts string, identityFile string, onlyDocker, onlyXDocker bool) {
+func remoteInstall(hosts string, identityFile string, onlyDocker, onlyXDocker bool, tailscaleAuthKey string) {
 	hostList := strings.Split(hosts, ",")
 
 	for _, host := range hostList {
@@ -338,6 +362,9 @@ func remoteInstall(hosts string, identityFile string, onlyDocker, onlyXDocker bo
 		} else {
 			script = installScript
 		}
+
+		script = fmt.Sprintf("export TAILSCALE_AUTH_KEY='%s'\n%s", tailscaleAuthKey, script)
+
 		err = session.Run(script)
 		if err != nil {
 			fmt.Printf("Failed to run script on %s: %v\n", host, err)
@@ -721,13 +748,13 @@ func readAndMergeConfigs(inputFile string) (*XDockerConfig, error) {
 // 	}
 // }
 
-func run(command, composeFile, remoteHosts, identityFile string, detach, removeOrphans, build bool, services []string, onlyDocker, onlyXDocker, dry, tailscaleIP, localhost bool) error {
+func run(command, composeFile, remoteHosts, identityFile string, detach, removeOrphans, build bool, services []string, onlyDocker, onlyXDocker, dry, tailscaleIP, localhost bool, tailscaleAuthKey string) error {
 	switch command {
 	case "install":
 		if remoteHosts == "" {
-			localInstall(onlyDocker, onlyXDocker)
+			localInstall(onlyDocker, onlyXDocker, tailscaleAuthKey)
 		} else {
-			remoteInstall(remoteHosts, identityFile, onlyDocker, onlyXDocker)
+			remoteInstall(remoteHosts, identityFile, onlyDocker, onlyXDocker, tailscaleAuthKey)
 		}
 	case "up", "down":
 		dockerComposeFile, err := processXDockerFile(composeFile, tailscaleIP, localhost)
