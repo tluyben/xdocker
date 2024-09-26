@@ -10,6 +10,9 @@ xdocker is an extended Docker Compose wrapper that provides additional functiona
 - **Version Checking**: Ensures compatibility by checking Docker and Docker Compose versions.
 - **Remote Installation**: Supports installation on remote hosts via SSH.
 - **Docker System Prune**: Includes a command to clean up Docker resources.
+- **Flexible Installation**: Options to install only Docker or only xdocker components.
+- **Dry Run**: Ability to generate Docker Compose files without starting containers.
+- **IP Address Binding**: Options to bind exposed ports to Tailscale IP or localhost.
 
 ## Installation
 
@@ -85,8 +88,39 @@ xdocker is an extended Docker Compose wrapper that provides additional functiona
   ```
 
 - **Detached Mode**: Run containers in the background
+
   ```
   xdocker up -d
+  ```
+
+- **Install Only Docker**: Install only Docker components
+
+  ```
+  xdocker install --only-docker
+  ```
+
+- **Install Only xDocker**: Install only Go and xdocker components
+
+  ```
+  xdocker install --only-xdocker
+  ```
+
+- **Dry Run**: Generate Docker Compose file without starting containers
+
+  ```
+  xdocker up --dry
+  ```
+
+- **Use Tailscale IP**: Bind exposed ports to Tailscale IP
+
+  ```
+  xdocker up --tailscale-ip
+  ```
+
+- **Use Localhost**: Bind exposed ports to localhost
+
+  ```
+  xdocker up --localhost
   ```
 
 ### Custom Instructions
