@@ -258,26 +258,26 @@ func main() {
 		err = run("up", *composeFile, "", "", *upDetach, !*upKeepOrphans, !*upNoBuild, upCmd.Args(), false, false, *upDry, *upTailscaleIP, *upLocalhost, "")
 	case "down":
 		downCmd.Parse(os.Args[2:])
-		var config *XDockerConfig
-		config, err = readAndMergeConfigs(*composeFile)
-		if err != nil {
-			fmt.Printf("Error reading xdocker file: %v\n", err)
-			os.Exit(1)
-		}
+		// var config *XDockerConfig
+		// config, err = readAndMergeConfigs(*composeFile)
+		// if err != nil {
+		// 	fmt.Printf("Error reading xdocker file: %v\n", err)
+		// 	os.Exit(1)
+		// }
 
-		// Parse additional arguments from the config
-		var configArgs []string
-		if config.Args != "" {
-			configArgs = strings.Fields(config.Args)
-			config.Args = "" // remove from the docker-compose file as it's not valid
-		}
+		// // Parse additional arguments from the config
+		// var configArgs []string
+		// if config.Args != "" {
+		// 	configArgs = strings.Fields(config.Args)
+		// 	config.Args = "" // remove from the docker-compose file as it's not valid
+		// }
 
-		// Merge CLI args with config args
-		allArgs := append(configArgs, downCmd.Args()...)
+		// // Merge CLI args with config args
+		// allArgs := append(configArgs, downCmd.Args()...)
 
-		// Process the merged arguments
-		downCmd.Parse(allArgs)
-		
+		// // Process the merged arguments
+		// downCmd.Parse(allArgs)
+
 		err = run("down", *composeFile, "", "", false, !*downKeepOrphans, false, downCmd.Args(), false, false, *downDry, false, false, "")
 	case "ps":
 		psCmd.Parse(os.Args[2:])
