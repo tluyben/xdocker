@@ -12,8 +12,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Shopify/go-lua"
 	"github.com/joho/godotenv"
+	"github.com/tluyben/go-lua"
 	"golang.org/x/crypto/ssh"
 	"gopkg.in/yaml.v3"
 )
@@ -710,6 +710,8 @@ func resolveEnvVariablesAndExpressionsInString(s string) (string, error) {
     l := lua.NewState()
     lua.OpenLibraries(l)
 
+	
+
     s = reLua.ReplaceAllStringFunc(s, func(match string) string {
         expr := match[2 : len(match)-2] // Remove {{ and }}
         if err := lua.DoString(l, "return " + expr); err != nil {
@@ -995,6 +997,8 @@ func loadExtensions() error {
             }
         }
     }
+	// print extensions for debugging; 
+	// fmt.Println(extensions)
     return nil
 }
 
@@ -1076,6 +1080,7 @@ func processExtension(ext Extension, value string, composeFileName string) (stri
     generateExpr = strings.TrimPrefix(generateExpr, "{{")
     generateExpr = strings.TrimSuffix(generateExpr, "}}")
 
+	// fmt.Println(generateExpr)
     if err := lua.DoString(l, generateExpr); err != nil {
         return "", fmt.Errorf("error evaluating Lua expression: %v", err)
     }

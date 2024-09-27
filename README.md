@@ -5,7 +5,7 @@ xdocker is an extended Docker Compose wrapper that provides additional functiona
 ## Features
 
 - **Environment Variable Resolution**: Automatically resolves environment variables in your configuration files.
-- **Expression Evaluation**: Supports custom expressions using the FEEL (Friendly Enough Expression Language) engine.
+- **Expression Evaluation**: Supports custom expressions using Lua for dynamic configuration.
 - **Custom Instructions**: Allows defining and using custom instructions through YAML extension files.
 - **Version Checking**: Ensures compatibility by checking Docker and Docker Compose versions.
 - **Remote Installation**: Supports installation on remote hosts via SSH.
@@ -14,6 +14,13 @@ xdocker is an extended Docker Compose wrapper that provides additional functiona
 - **Dry Run**: Ability to generate Docker Compose files without starting containers.
 - **IP Address Binding**: Options to bind exposed ports to Tailscale IP or localhost.
 - **Default Arguments**: Ability to specify default arguments in the xdocker-compose file.
+- **Service Management**: Commands to add, remove, skip, and unskip services.
+- **Port Management**: Commands to add, remove, and update port mappings.
+- **Volume Management**: Commands to add, remove, and update volume mappings.
+- **Config Extension**: Ability to extend and merge multiple configuration files.
+- **Tailscale Integration**: Option to use Tailscale IP for exposed ports.
+- **Interactive Shell**: Command to open an interactive shell in a container.
+- **Command Execution**: Ability to execute commands in containers.
 
 ## Installation
 
@@ -70,8 +77,26 @@ xdocker is an extended Docker Compose wrapper that provides additional functiona
   ```
 
 - **Install**: Set up xdocker environment (local or remote)
+
   ```
   xdocker install
+  ```
+
+- **PS**: List containers
+
+  ```
+  xdocker ps
+  ```
+
+- **Interactive Exec**: Open an interactive shell in a container
+
+  ```
+  xdocker iexec <container_or_service>
+  ```
+
+- **Exec**: Execute a command in a container
+  ```
+  xdocker exec <container_or_service> <command>
   ```
 
 ### Additional Options
@@ -124,9 +149,84 @@ xdocker is an extended Docker Compose wrapper that provides additional functiona
   xdocker up --localhost
   ```
 
+- **Exclude Services from IP Binding**: Exclude specific services from IP binding
+
+  ```
+  xdocker up --exclude service1,service2
+  ```
+
+- **Bind Services to Global IP**: Bind specific services to 0.0.0.0
+
+  ```
+  xdocker up --global service1,service2
+  ```
+
+### Service Management
+
+- **Add Service**: Add a new service to the compose file
+
+  ```
+  xdocker add <service_name>
+  ```
+
+- **Remove Service**: Remove a service from the compose file
+
+  ```
+  xdocker remove <service_name>
+  ```
+
+- **Skip Service**: Mark a service to be skipped during deployment
+
+  ```
+  xdocker skip <service_name>
+  ```
+
+- **Unskip Service**: Remove the skip flag from a service
+  ```
+  xdocker unskip <service_name>
+  ```
+
+### Port Management
+
+- **Add Port**: Add a port mapping to a service
+
+  ```
+  xdocker add-port <service_name> <port_mapping>
+  ```
+
+- **Remove Port**: Remove a port mapping from a service
+
+  ```
+  xdocker remove-port <port>
+  ```
+
+- **Update Port**: Update an existing port mapping
+  ```
+  xdocker update-port <old_port> <new_port>
+  ```
+
+### Volume Management
+
+- **Add Volume**: Add a volume mapping to a service
+
+  ```
+  xdocker add-volume <service_name> <volume_mapping>
+  ```
+
+- **Remove Volume**: Remove a volume mapping from a service
+
+  ```
+  xdocker remove-volume <service_name> <volume>
+  ```
+
+- **Update Volume**: Update an existing volume mapping
+  ```
+  xdocker update-volume <service_name> <old_volume> <new_volume>
+  ```
+
 ### Custom Instructions
 
-xdocker supports custom instructions defined in YAML files. Place your custom instruction definitions in the `extensions` directory.
+xdocker supports custom instructions defined in YAML files. Place your custom instruction definitions in the `extensions` directory. These instructions use Lua for dynamic content generation.
 
 Example `skip.yml`:
 
@@ -140,7 +240,35 @@ arguments:
     description: skip this service
     required: true
 generate: |
-  {{if (shouldSkip) then "profiles:\n  - donotstart\n" else ""}}
+  {{
+  if shouldSkip then
+    return "profiles:\n  - donotstart\n"
+  else
+    return ""
+  end
+  }}
+```
+
+Example `openglobal.yml`:
+
+```yaml
+name: openglobal
+required: false
+path: /$service/open-global
+arguments:
+  globalMapping:
+    type: string
+    description: "Global mapping in the format domain.com:compose-port:service-port"
+    required: true
+generate: |
+  {{
+  for domain, composePort, servicePort in string.gmatch(globalMapping, "(.+):(%d+):(%d+)") do
+    if not domain or not composePort or not servicePort then
+      return ""
+    end
+    return string.format("ports:\n - \"127.0.0.1:%s:%s\"\n", composePort, servicePort)
+  end
+  }}
 ```
 
 Use in your xdocker-compose.yml:
@@ -150,6 +278,7 @@ services:
   myservice:
     image: myimage
     skip: true
+    open-global: "example.com:8080:80"
 ```
 
 ### Default Arguments
@@ -177,12 +306,32 @@ services:
 
 ## Expressions
 
-xdocker supports FEEL expressions enclosed in double curly braces:
+xdocker supports Lua expressions enclosed in double curly braces for dynamic configuration:
 
 ```yaml
 services:
   myservice:
-    replicas: { { if ($ENV_PROD = "true") then 3 else 1 } }
+    replicas: {
+        {
+          if os.getenv("ENV_PROD") == "true" then
+          return 3
+          else
+          return 1
+          end,
+        },
+      }
+```
+
+These Lua expressions allow for more complex logic and dynamic configurations based on environment variables or other conditions.
+
+## Config Extension
+
+You can extend and merge multiple configuration files using the `extend` property:
+
+```yaml
+extend: base-config.yml
+services:
+  # ... additional service definitions
 ```
 
 ## Version Requirements
@@ -195,11 +344,6 @@ xdocker will check these version requirements before executing most commands.
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
-
-## TODO
-
-- add arguments to .docker-compose-xxx.yml so when running restart , it will just add the same args to up as you did before
-- add autogenerated secrets to some file (encrypted) which are to be included in the startup, for instance auto-passwords etc
 
 ## License
 

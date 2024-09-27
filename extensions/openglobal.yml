@@ -1,0 +1,20 @@
+name: openglobal
+required: false
+path: /$service/open-global
+arguments:
+  globalMapping:
+    type: string
+    description: "Global mapping in the format domain.com:compose-port:service-port"
+    required: true
+generate: |
+  {{
+
+  for domain, composePort, servicePort in string.gmatch(globalMapping, "(.+):(%d+):(%d+)") do     
+    if not domain or not composePort or not servicePort then
+      return ""
+    end
+
+    return string.format("ports:\n  - \"127.0.0.1:%s:%s\"\n", composePort, servicePort)
+  end
+
+  }}
