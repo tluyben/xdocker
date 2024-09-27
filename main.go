@@ -563,7 +563,7 @@ func modifyPortMappings(config *XDockerConfig, useTailscale bool) error {
 	}
 
 	for _, serviceConfig := range config.Services {
-		service := serviceConfig.(map[interface{}]interface{})
+		service := serviceConfig.(map[string]interface{})
 		if ports, ok := service["ports"].([]interface{}); ok {
 			for i, port := range ports {
 				portStr := port.(string)
@@ -735,8 +735,8 @@ func mergeConfigs(parent, child *XDockerConfig) {
 			child.Services[serviceName] = serviceConfig
 		} else {
 			// Merge service configurations
-			parentService := serviceConfig.(map[interface{}]interface{})
-			childService := child.Services[serviceName].(map[interface{}]interface{})
+			parentService := serviceConfig.(map[string]interface {})
+			childService := child.Services[serviceName].(map[string]interface {})
 			for key, value := range parentService {
 				if _, exists := childService[key]; !exists {
 					childService[key] = value
