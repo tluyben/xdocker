@@ -7,4 +7,10 @@ arguments:
     description: skip this service
     required: true
 generate: |
-  {{if (shouldSkip) then "profiles:\n  - donotstart\n" else ""}}
+  {{
+  if shouldSkip then
+    return "profiles:\n  - donotstart\n"
+  else
+    return ""
+  end
+  }}

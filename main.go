@@ -13,8 +13,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Shopify/go-lua"
 	"github.com/joho/godotenv"
-	feel "github.com/superisaac/FEEL.go"
 	"golang.org/x/crypto/ssh"
 	"gopkg.in/yaml.v3"
 )
@@ -148,6 +148,7 @@ type XDockerConfig struct {
 	Networks map[string]interface{} `yaml:"networks,omitempty"`
 	Extend   string                 `yaml:"extend,omitempty"`
 	Args     string                 `yaml:"args,omitempty"`
+	FileName string 				`yaml:"filename,omitempty"`
 }
 type Extension struct {
 	Name      string               `yaml:"name"`
@@ -161,16 +162,21 @@ type Argument struct {
 	Type        string `yaml:"type"`
 	Description string `yaml:"description"`
 	Required    bool   `yaml:"required"`
+	Default     string `yaml:"default,omitempty"`
+
 }
 
 var extensions map[string]Extension
 
 const (
 	defaultGlobalExtensionsDir = "/usr/local/share/xdocker/extensions"
+	defaultGlobalServicesDir = "/usr/local/share/xdocker/services"
 )
 
 var (
 	extensionsDir string
+	servicesDir string
+
 )
 
 func main() {
@@ -181,6 +187,17 @@ func main() {
 	iexecCmd := flag.NewFlagSet("iexec", flag.ExitOnError)
 	execCmd := flag.NewFlagSet("exec", flag.ExitOnError)
 
+	addServiceCmd := flag.NewFlagSet("add", flag.ExitOnError)
+    removeServiceCmd := flag.NewFlagSet("remove", flag.ExitOnError)
+    skipServiceCmd := flag.NewFlagSet("skip", flag.ExitOnError)
+    unskipServiceCmd := flag.NewFlagSet("unskip", flag.ExitOnError)
+
+	addPortCmd := flag.NewFlagSet("add-port", flag.ExitOnError)
+    removePortCmd := flag.NewFlagSet("remove-port", flag.ExitOnError)
+    updatePortCmd := flag.NewFlagSet("update-port", flag.ExitOnError)
+    addVolumeCmd := flag.NewFlagSet("add-volume", flag.ExitOnError)
+    removeVolumeCmd := flag.NewFlagSet("remove-volume", flag.ExitOnError)
+    updateVolumeCmd := flag.NewFlagSet("update-volume", flag.ExitOnError)
 
 	// Install command flags
 	remoteHosts := installCmd.String("hosts", "", "Comma-separated list of user@host")
@@ -198,6 +215,8 @@ func main() {
 	upDry := upCmd.Bool("dry", false, "Only generate the docker-compose file without starting containers")
 	upTailscaleIP := upCmd.Bool("tailscale-ip", false, "Use Tailscale IP for exposed ports")
 	upLocalhost := upCmd.Bool("localhost", false, "Use localhost for exposed ports")
+    upExclude := upCmd.String("exclude", "", "Comma-separated list of services to exclude from IP binding")
+    upGlobal := upCmd.String("global", "", "Comma-separated list of services to bind to 0.0.0.0")
 
 	// Down command flags
 	downKeepOrphans := downCmd.Bool("keep-orphans", false, "Keep containers for services not defined in the compose file")
@@ -206,10 +225,10 @@ func main() {
 	// Global flag
 	composeFile := flag.String("f", "xdocker-compose.yml", "Path to xdocker compose file")
 
-
-
 	// extensionsDir = defaultGlobalExtensionsDir
 	flag.StringVar(&extensionsDir, "extension-dir", "", "Custom extensions directory")
+	flag.StringVar(&servicesDir, "services-dir", defaultGlobalServicesDir, "Custom services directory")
+
 	flag.Parse()
 	if extensionsDir == "" {
 		extensionsDir = defaultGlobalExtensionsDir
@@ -224,7 +243,6 @@ func main() {
 			os.Exit(1)
 		}
 	}
-
 
 	if len(os.Args) < 2 {
 		fmt.Println("Expected 'install', 'up', 'down', 'ps', 'iexec', or 'exec' subcommands")
@@ -244,11 +262,12 @@ func main() {
 		if tailscaleAuthKey == "" {
 			tailscaleAuthKey = os.Getenv("TAILSCALE_AUTH_KEY")
 		}
-		err = run("install", *composeFile, *remoteHosts, *identityFile, false, false, false, nil, *onlyDocker, *onlyXDocker, false, false, false, tailscaleAuthKey)
+		err = run("install", *composeFile, *remoteHosts, *identityFile, false, false, false, nil, *onlyDocker, *onlyXDocker, false, false, false, tailscaleAuthKey, "", "")
 	case "up":
 		upCmd.Parse(os.Args[2:])
 		var config *XDockerConfig
 		config, err = readAndMergeConfigs(*composeFile)
+		config.FileName = *composeFile
 		if err != nil {
 			fmt.Fprintf(os.Stderr,"error reading xdocker file: %v", err)
 			os.Exit(1)
@@ -267,7 +286,7 @@ func main() {
 		// Process the merged arguments
 		upCmd.Parse(allArgs)
 
-		err = run("up", *composeFile, "", "", *upDetach, !*upKeepOrphans, !*upNoBuild, upCmd.Args(), false, false, *upDry, *upTailscaleIP, *upLocalhost, "")
+		err = run("up", *composeFile, "", "", *upDetach, !*upKeepOrphans, !*upNoBuild, upCmd.Args(), false, false, *upDry, *upTailscaleIP, *upLocalhost, "", *upExclude, *upGlobal)
 	case "down":
 		downCmd.Parse(os.Args[2:])
 		// var config *XDockerConfig
@@ -290,7 +309,7 @@ func main() {
 		// // Process the merged arguments
 		// downCmd.Parse(allArgs)
 
-		err = run("down", *composeFile, "", "", false, !*downKeepOrphans, false, downCmd.Args(), false, false, *downDry, false, false, "")
+		err = run("down", *composeFile, "", "", false, !*downKeepOrphans, false, downCmd.Args(), false, false, *downDry, false, false, "", "", "")
 	case "ps":
 		psCmd.Parse(os.Args[2:])
 		err = runPs(*composeFile)
@@ -308,6 +327,61 @@ func main() {
 			os.Exit(1)
 		}
 		err = runExec(*composeFile, execCmd.Arg(0), execCmd.Args()[1:])
+    case "add":
+        addServiceCmd.Parse(os.Args[2:])
+        err = addServices(*composeFile, addServiceCmd.Args())
+    case "remove":
+        removeServiceCmd.Parse(os.Args[2:])
+        err = removeServices(*composeFile, removeServiceCmd.Args())
+    case "skip":
+        skipServiceCmd.Parse(os.Args[2:])
+        err = skipServices(*composeFile, skipServiceCmd.Args())
+    case "unskip":
+        unskipServiceCmd.Parse(os.Args[2:])
+        err = unskipServices(*composeFile, unskipServiceCmd.Args())
+	case "add-port":
+        addPortCmd.Parse(os.Args[2:])
+        if addPortCmd.NArg() != 2 {
+            fmt.Println("Usage: xdocker add-port <service> <port>")
+            os.Exit(1)
+        }
+        err = addPort(*composeFile, addPortCmd.Arg(0), addPortCmd.Arg(1))
+    case "remove-port":
+        removePortCmd.Parse(os.Args[2:])
+        if removePortCmd.NArg() != 1 {
+            fmt.Println("Usage: xdocker remove-port <port>")
+            os.Exit(1)
+        }
+        err = removePort(*composeFile, removePortCmd.Arg(0))
+    case "update-port":
+        updatePortCmd.Parse(os.Args[2:])
+        if updatePortCmd.NArg() != 2 {
+            fmt.Println("Usage: xdocker update-port <old-port> <new-port>")
+            os.Exit(1)
+        }
+        err = updatePort(*composeFile, updatePortCmd.Arg(0), updatePortCmd.Arg(1))
+    case "add-volume":
+        addVolumeCmd.Parse(os.Args[2:])
+        if addVolumeCmd.NArg() != 2 {
+            fmt.Println("Usage: xdocker add-volume <service> <volume>")
+            os.Exit(1)
+        }
+        err = addVolume(*composeFile, addVolumeCmd.Arg(0), addVolumeCmd.Arg(1))
+    case "remove-volume":
+        removeVolumeCmd.Parse(os.Args[2:])
+        if removeVolumeCmd.NArg() != 2 {
+            fmt.Println("Usage: xdocker remove-volume <service> <volume>")
+            os.Exit(1)
+        }
+        err = removeVolume(*composeFile, removeVolumeCmd.Arg(0), removeVolumeCmd.Arg(1))
+    case "update-volume":
+        updateVolumeCmd.Parse(os.Args[2:])
+        if updateVolumeCmd.NArg() != 3 {
+            fmt.Println("Usage: xdocker update-volume <service> <old-volume> <new-volume>")
+            os.Exit(1)
+        }
+        err = updateVolume(*composeFile, updateVolumeCmd.Arg(0), updateVolumeCmd.Arg(1), updateVolumeCmd.Arg(2))
+
 	default:
 		fmt.Println("Expected 'install', 'up', 'down', 'ps', 'iexec', or 'exec' subcommands")
 		os.Exit(1)
@@ -500,7 +574,7 @@ func runDockerCompose(args ...string) error {
 	return nil
 }
 
-func processXDockerFile(inputFile string, tailscaleIP, localhost bool) (string, error) {
+func processXDockerFile(inputFile string, tailscaleIP, localhost bool, exclude, global string) (string, error) {
 	// Load .env file
 	envFile := filepath.Join(filepath.Dir(inputFile), ".env")
 	err := godotenv.Load(envFile)
@@ -509,6 +583,7 @@ func processXDockerFile(inputFile string, tailscaleIP, localhost bool) (string, 
 	}
 
 	config, err := readAndMergeConfigs(inputFile)
+	config.FileName = inputFile
 	if err != nil {
 		return "", fmt.Errorf("error processing xdocker files: %v", err)
 	}
@@ -527,9 +602,10 @@ func processXDockerFile(inputFile string, tailscaleIP, localhost bool) (string, 
 
 	config.Version = ""
 	config.Args = ""
+	config.FileName = ""
 
 	if tailscaleIP || localhost {
-		err = modifyPortMappings(config, tailscaleIP)
+        err = modifyPortMappings(config, tailscaleIP, exclude, global)
 		if err != nil {
 			return "", fmt.Errorf("error modifying port mappings: %v", err)
 		}
@@ -549,36 +625,59 @@ func processXDockerFile(inputFile string, tailscaleIP, localhost bool) (string, 
 	return outputFile, nil
 }
 
-func modifyPortMappings(config *XDockerConfig, useTailscale bool) error {
-	var ip string
-	var err error
+func modifyPortMappings(config *XDockerConfig, useTailscale bool, exclude, global string) error {
+    var ip string
+    var err error
 
-	if useTailscale {
-		ip, err = getTailscaleIP()
-		if err != nil {
-			return fmt.Errorf("error getting Tailscale IP: %v", err)
-		}
-	} else {
-		ip = "127.0.0.1"
-	}
+    if useTailscale {
+        ip, err = getTailscaleIP()
+        if err != nil {
+            return fmt.Errorf("error getting Tailscale IP: %v", err)
+        }
+    } else {
+        ip = "127.0.0.1"
+    }
 
-	for _, serviceConfig := range config.Services {
-		service := serviceConfig.(map[string]interface{})
-		if ports, ok := service["ports"].([]interface{}); ok {
-			for i, port := range ports {
-				portStr := port.(string)
-				parts := strings.Split(portStr, ":")
-				if len(parts) == 2 {
-					ports[i] = fmt.Sprintf("%s:%s:%s", ip, parts[0], parts[1])
-				} else if len(parts) == 3 {
-					ports[i] = fmt.Sprintf("%s:%s:%s", ip, parts[1], parts[2])
-				}
-			}
-			service["ports"] = ports
-		}
-	}
+    excludedServices := strings.Split(exclude, ",")
+    globalServices := strings.Split(global, ",")
 
-	return nil
+    for serviceName, serviceConfig := range config.Services {
+        service := serviceConfig.(map[interface{}]interface{})
+        if ports, ok := service["ports"].([]interface{}); ok {
+            for i, port := range ports {
+                portStr := port.(string)
+                parts := strings.Split(portStr, ":")
+
+                // Check if the service should be excluded
+                if contains(excludedServices, serviceName) {
+                    continue
+                }
+
+                // Check if the service should be bound to 0.0.0.0
+                if contains(globalServices, serviceName) {
+                    ip = "0.0.0.0"
+                }
+
+                if len(parts) == 2 {
+                    ports[i] = fmt.Sprintf("%s:%s:%s", ip, parts[0], parts[1])
+                } else if len(parts) == 3 {
+                    ports[i] = fmt.Sprintf("%s:%s:%s", ip, parts[1], parts[2])
+                }
+            }
+            service["ports"] = ports
+        }
+    }
+
+    return nil
+}
+
+func contains(slice []string, item string) bool {
+    for _, a := range slice {
+        if a == item {
+            return true
+        }
+    }
+    return false
 }
 
 
@@ -673,16 +772,26 @@ func resolveEnvVariablesAndExpressionsInString(s string) (string, error) {
 	}
 
 	// Then, evaluate expressions
-	reExpr := regexp.MustCompile(`\{\{(.+?)\}\}`)
-	return reExpr.ReplaceAllStringFunc(s, func(match string) string {
-		expr := match[2 : len(match)-2] // Remove {{ and }}
-		res, err := feel.EvalString(expr)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Expression evaluation error: %s\n", err)
-			return match // Return original if evaluation fails
-		}
-		return convertToString(res)
-	}), nil
+	reLua := regexp.MustCompile(`\{\{(.+?)\}\}`)
+    l := lua.NewState()
+    lua.OpenLibraries(l)
+
+    s = reLua.ReplaceAllStringFunc(s, func(match string) string {
+        expr := match[2 : len(match)-2] // Remove {{ and }}
+        if err := lua.DoString(l, "return " + expr); err != nil {
+            fmt.Fprintf(os.Stderr, "Lua expression evaluation error: %s\n", err)
+            return match // Return original if evaluation fails
+        }
+        if l.Top() == 0 {
+            fmt.Fprintf(os.Stderr, "Lua expression did not return a value\n")
+            return match
+        }
+        result := lua.CheckString(l, -1)
+        l.Pop(1)
+        return result
+    })
+
+    return s, nil
 }
 
 func convertToString(v interface{}) string {
@@ -791,6 +900,113 @@ func readAndMergeConfigs(inputFile string) (*XDockerConfig, error) {
 	return readAndMergeConfigsRecursive(inputFile, visited)
 }
 
+func addServices(composeFile string, services []string) error {
+    config, err := readAndMergeConfigs(composeFile)
+    if err != nil {
+        return err
+    }
+
+    for _, service := range services {
+        serviceConfig, err := readServiceConfig(service)
+        if err != nil {
+            return err
+        }
+        for name, def := range serviceConfig.Services {
+            config.Services[name] = def
+        }
+    }
+
+    return writeConfig(composeFile, config)
+}
+
+func removeServices(composeFile string, services []string) error {
+    config, err := readAndMergeConfigs(composeFile)
+    if err != nil {
+        return err
+    }
+
+    for _, service := range services {
+        delete(config.Services, service)
+    }
+
+    return writeConfig(composeFile, config)
+}
+
+func skipServices(composeFile string, services []string) error {
+    config, err := readAndMergeConfigs(composeFile)
+    if err != nil {
+        return err
+    }
+
+    for _, service := range services {
+        if svc, ok := config.Services[service]; ok {
+            svcMap := svc.(map[interface{}]interface{})
+            svcMap["skip"] = true
+            config.Services[service] = svcMap
+        }
+    }
+
+    return writeConfig(composeFile, config)
+}
+
+func unskipServices(composeFile string, services []string) error {
+    config, err := readAndMergeConfigs(composeFile)
+    if err != nil {
+        return err
+    }
+
+    for _, service := range services {
+        if svc, ok := config.Services[service]; ok {
+            svcMap := svc.(map[interface{}]interface{})
+            delete(svcMap, "skip")
+            config.Services[service] = svcMap
+        }
+    }
+
+    return writeConfig(composeFile, config)
+}
+
+func readServiceConfig(service string) (*XDockerConfig, error) {
+    locations := []string{
+        filepath.Join("services", service + ".yml"),
+        filepath.Join(servicesDir, service + ".yml"),
+    }
+
+    if servicesDir != defaultGlobalServicesDir {
+        locations = append(locations, filepath.Join(defaultGlobalServicesDir, service + ".yml"))
+    }
+
+    var data []byte
+    var err error
+
+    for _, location := range locations {
+        data, err = ioutil.ReadFile(location)
+        if err == nil {
+            break
+        }
+    }
+
+    if err != nil {
+        return nil, fmt.Errorf("service definition for %s not found: %v", service, err)
+    }
+
+    var config XDockerConfig
+    err = yaml.Unmarshal(data, &config)
+    if err != nil {
+        return nil, err
+    }
+
+    return &config, nil
+}
+
+func writeConfig(filename string, config *XDockerConfig) error {
+    data, err := yaml.Marshal(config)
+    if err != nil {
+        return err
+    }
+
+    return ioutil.WriteFile(filename, data, 0644)
+}
 
 // func expandEnvVariables(config *XDockerConfig) {
 // 	for serviceName, serviceConfig := range config.Services {
@@ -804,7 +1020,7 @@ func readAndMergeConfigs(inputFile string) (*XDockerConfig, error) {
 // 	}
 // }
 
-func run(command, composeFile, remoteHosts, identityFile string, detach, removeOrphans, build bool, services []string, onlyDocker, onlyXDocker, dry, tailscaleIP, localhost bool, tailscaleAuthKey string) error {
+func run(command, composeFile, remoteHosts, identityFile string, detach, removeOrphans, build bool, services []string, onlyDocker, onlyXDocker, dry, tailscaleIP, localhost bool, tailscaleAuthKey, exclude, global string) error {
 
 
 	switch command {
@@ -815,7 +1031,7 @@ func run(command, composeFile, remoteHosts, identityFile string, detach, removeO
 			remoteInstall(remoteHosts, identityFile, onlyDocker, onlyXDocker, tailscaleAuthKey)
 		}
 	case "up", "down":
-		dockerComposeFile, err := processXDockerFile(composeFile, tailscaleIP, localhost)
+		dockerComposeFile, err := processXDockerFile(composeFile, tailscaleIP, localhost,  exclude, global)
 		if err != nil {
 			return fmt.Errorf("error processing xdocker file: %v", err)
 		}
@@ -861,28 +1077,43 @@ func customMarshal(in interface{}) ([]byte, error) {
    return buf.Bytes(), nil
 }
 
+
 func loadExtensions() error {
-	extensions = make(map[string]Extension)
-	files, err := ioutil.ReadDir(extensionsDir)
-	if err != nil {
-		return fmt.Errorf("error reading extensions directory %s: %v", extensionsDir, err)
-	}
-	for _, file := range files {
-		if filepath.Ext(file.Name()) == ".yml" {
-			filePath := filepath.Join(extensionsDir, file.Name())
-			data, err := ioutil.ReadFile(filePath)
-			if err != nil {
-				return fmt.Errorf("error reading extension file %s: %v", file.Name(), err)
-			}
-			var ext Extension
-			err = yaml.Unmarshal(data, &ext)
-			if err != nil {
-				return fmt.Errorf("error parsing extension file %s: %v", file.Name(), err)
-			}
-			extensions[ext.Name] = ext
+    extensions = make(map[string]Extension)
+    dirs := []string{extensionsDir}
+    
+    if extensionsDir != defaultGlobalExtensionsDir {
+        dirs = append(dirs, defaultGlobalExtensionsDir)
+    }
+
+    for _, dir := range dirs {
+		// check if dir exists, otherwise skip it; 
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			continue
 		}
-	}
-	return nil
+		
+        files, err := ioutil.ReadDir(dir)
+        if err != nil {
+            fmt.Fprintf(os.Stderr, "Warning: error reading extensions directory %s: %v\n", dir, err)
+            continue
+        }
+        for _, file := range files {
+            if filepath.Ext(file.Name()) == ".yml" {
+                filePath := filepath.Join(dir, file.Name())
+                data, err := ioutil.ReadFile(filePath)
+                if err != nil {
+                    return fmt.Errorf("error reading extension file %s: %v", file.Name(), err)
+                }
+                var ext Extension
+                err = yaml.Unmarshal(data, &ext)
+                if err != nil {
+                    return fmt.Errorf("error parsing extension file %s: %v", file.Name(), err)
+                }
+                extensions[ext.Name] = ext
+            }
+        }
+    }
+    return nil
 }
 
 func processCustomInstructions(config *XDockerConfig) error {
@@ -896,7 +1127,7 @@ func processCustomInstructions(config *XDockerConfig) error {
 			if strings.HasPrefix(ext.Path, "/$service/") {
 				key := strings.TrimPrefix(ext.Path, "/$service/")
 				if value, ok := service[key]; ok {
-					result, err := processExtension(ext, fmt.Sprintf("%v", value))
+					result, err := processExtension(ext, fmt.Sprintf("%v", value), config.FileName)
 					if err != nil {
 						return fmt.Errorf("error processing extension %s for service %s: %v", extName, serviceName, err)
 					}
@@ -918,44 +1149,63 @@ func processCustomInstructions(config *XDockerConfig) error {
 	}
 	return nil
 }
-func processExtension(ext Extension, value string) (string, error) {
-	var bindStatements []string
-	for argName, arg := range ext.Arguments {
-		var bindExpr string
-		switch arg.Type {
-		case "bool":
-			bindExpr = fmt.Sprintf("bind(\"%s\", \"%s\" = \"true\" or \"%s\" = \"1\" or \"%s\" = \"yes\");", argName, value, value, value)
-		case "int":
+func processExtension(ext Extension, value string, composeFileName string) (string, error) {
+    l := lua.NewState()
+    lua.OpenLibraries(l)
+
+    // Set up arguments
+    for argName, arg := range ext.Arguments {
+        switch arg.Type {
+        case "bool":
+            l.PushBoolean(value == "true" || value == "1" || value == "yes")
+        case "int":
 			intValue, err := strconv.Atoi(value)
 			if err != nil {
 				return "", fmt.Errorf("error converting value to int: %v", err)
 			}
-			bindExpr = fmt.Sprintf("bind(\"%s\", %d);", argName, intValue)
-		case "float":
-			floatValue, err := strconv.ParseFloat(value, 64)
-			if err != nil {
-				return "", fmt.Errorf("error converting value to float: %v", err)
-			}
-			bindExpr = fmt.Sprintf("bind(\"%s\", %f);", argName, floatValue)
-		default: // string
-			bindExpr = fmt.Sprintf("bind(\"%s\", \"%s\");", argName, value)
-		}
-		bindStatements = append(bindStatements, bindExpr)
-	}
+			l.PushInteger(intValue)
+        case "float":
+            floatValue, err := strconv.ParseFloat(value, 64)
+            if err != nil {
+                return "", fmt.Errorf("error converting value to float: %v", err)
+            }
+            l.PushNumber(floatValue)
+        case "env":
+               envValue := os.Getenv(value)
+				if envValue == "" && arg.Default != "" {
+					envValue = os.Getenv(arg.Default)
+				}
+				if envValue == "" {
+					envValue = arg.Default // Use the default value directly if env var is not set
+				}
+				l.PushString(envValue)
+        default: // string
+            l.PushString(value)
+        }
+        l.SetGlobal(argName)
+    }
 
-	// Remove {{}} from the generate expression
-	generateExpr := strings.TrimSpace(ext.Generate)
-	generateExpr = strings.TrimPrefix(generateExpr, "{{")
-	generateExpr = strings.TrimSuffix(generateExpr, "}}")
+    // Set XDOCKER_COMPOSE_FILE
+    l.PushString(composeFileName)
+    l.SetGlobal("XDOCKER_COMPOSE_FILE")
 
-	fullExpression := strings.Join(bindStatements, "") + "" + generateExpr
+    // Remove {{}} from the generate expression
+    generateExpr := strings.TrimSpace(ext.Generate)
+    generateExpr = strings.TrimPrefix(generateExpr, "{{")
+    generateExpr = strings.TrimSuffix(generateExpr, "}}")
 
-	result, err := feel.EvalString(fullExpression)
-	if err != nil {
-		return "", fmt.Errorf("error evaluating extension generate expression: %v\nFull expression:\n%s", err, fullExpression)
-	}
+    if err := lua.DoString(l, generateExpr); err != nil {
+        return "", fmt.Errorf("error evaluating Lua expression: %v", err)
+    }
 
-	return fmt.Sprintf("%v", result), nil
+    if l.Top() == 0 {
+        return "", fmt.Errorf("lua script did not return a value")
+    }
+
+    result := lua.CheckString(l, -1)
+    l.Pop(1)
+
+    return result, nil
 }
 
 func runPs(composeFile string) error {
@@ -1026,4 +1276,136 @@ func containerExists(containerName string) bool {
 func shellExists(containerName, shell string) bool {
 	cmd := exec.Command("docker", "exec", containerName, "which", shell)
 	return cmd.Run() == nil
+}
+
+func addPort(composeFile, service, port string) error {
+    config, err := readAndMergeConfigs(composeFile)
+    if err != nil {
+        return err
+    }
+
+    if svc, ok := config.Services[service]; ok {
+        svcMap := svc.(map[interface{}]interface{})
+        ports, _ := svcMap["ports"].([]interface{})
+        ports = append(ports, port)
+        svcMap["ports"] = ports
+        config.Services[service] = svcMap
+    } else {
+        return fmt.Errorf("service %s not found", service)
+    }
+
+    return writeConfig(composeFile, config)
+}
+
+func removePort(composeFile, port string) error {
+    config, err := readAndMergeConfigs(composeFile)
+    if err != nil {
+        return err
+    }
+
+    for service, svc := range config.Services {
+        svcMap := svc.(map[interface{}]interface{})
+        if ports, ok := svcMap["ports"].([]interface{}); ok {
+            newPorts := make([]interface{}, 0)
+            for _, p := range ports {
+                if !strings.HasPrefix(p.(string), port+":") {
+                    newPorts = append(newPorts, p)
+                }
+            }
+            svcMap["ports"] = newPorts
+            config.Services[service] = svcMap
+        }
+    }
+
+    return writeConfig(composeFile, config)
+}
+
+func updatePort(composeFile, oldPort, newPort string) error {
+    config, err := readAndMergeConfigs(composeFile)
+    if err != nil {
+        return err
+    }
+
+    for service, svc := range config.Services {
+        svcMap := svc.(map[interface{}]interface{})
+        if ports, ok := svcMap["ports"].([]interface{}); ok {
+            for i, p := range ports {
+                if strings.HasPrefix(p.(string), oldPort+":") {
+                    ports[i] = newPort
+                }
+            }
+            svcMap["ports"] = ports
+            config.Services[service] = svcMap
+        }
+    }
+
+    return writeConfig(composeFile, config)
+}
+
+func addVolume(composeFile, service, volume string) error {
+    config, err := readAndMergeConfigs(composeFile)
+    if err != nil {
+        return err
+    }
+
+    if svc, ok := config.Services[service]; ok {
+        svcMap := svc.(map[interface{}]interface{})
+        volumes, _ := svcMap["volumes"].([]interface{})
+        volumes = append(volumes, volume)
+        svcMap["volumes"] = volumes
+        config.Services[service] = svcMap
+    } else {
+        return fmt.Errorf("service %s not found", service)
+    }
+
+    return writeConfig(composeFile, config)
+}
+
+func removeVolume(composeFile, service, volume string) error {
+    config, err := readAndMergeConfigs(composeFile)
+    if err != nil {
+        return err
+    }
+
+    if svc, ok := config.Services[service]; ok {
+        svcMap := svc.(map[interface{}]interface{})
+        if volumes, ok := svcMap["volumes"].([]interface{}); ok {
+            newVolumes := make([]interface{}, 0)
+            for _, v := range volumes {
+                if !strings.HasPrefix(v.(string), volume+":") {
+                    newVolumes = append(newVolumes, v)
+                }
+            }
+            svcMap["volumes"] = newVolumes
+            config.Services[service] = svcMap
+        }
+    } else {
+        return fmt.Errorf("service %s not found", service)
+    }
+
+    return writeConfig(composeFile, config)
+}
+
+func updateVolume(composeFile, service, oldVolume, newVolume string) error {
+    config, err := readAndMergeConfigs(composeFile)
+    if err != nil {
+        return err
+    }
+
+    if svc, ok := config.Services[service]; ok {
+        svcMap := svc.(map[interface{}]interface{})
+        if volumes, ok := svcMap["volumes"].([]interface{}); ok {
+            for i, v := range volumes {
+                if strings.HasPrefix(v.(string), oldVolume+":") {
+                    volumes[i] = newVolume
+                }
+            }
+            svcMap["volumes"] = volumes
+            config.Services[service] = svcMap
+        }
+    } else {
+        return fmt.Errorf("service %s not found", service)
+    }
+
+    return writeConfig(composeFile, config)
 }
