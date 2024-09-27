@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"flag"
@@ -17,7 +16,7 @@ import (
 	"github.com/joho/godotenv"
 	feel "github.com/superisaac/FEEL.go"
 	"golang.org/x/crypto/ssh"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 )
 
 const dockerInstallScript = `#!/bin/bash
@@ -215,6 +214,17 @@ func main() {
 	if extensionsDir == "" {
 		extensionsDir = defaultGlobalExtensionsDir
 	}
+
+	// if extensionsDir does not exist, see if ./extensions exists and use that, if not, error out 
+	if _, err := os.Stat(extensionsDir); os.IsNotExist(err) {
+		if _, err := os.Stat("./extensions"); !os.IsNotExist(err) {
+			extensionsDir = "./extensions"
+		} else {
+			fmt.Fprintf(os.Stderr, "Extensions directory %s does not exist\n", extensionsDir)
+			os.Exit(1)
+		}
+	}
+
 
 	if len(os.Args) < 2 {
 		fmt.Println("Expected 'install', 'up', 'down', 'ps', 'iexec', or 'exec' subcommands")
@@ -574,15 +584,18 @@ func modifyPortMappings(config *XDockerConfig, useTailscale bool) error {
 
 
 func resolveAllEnvVariablesAndExpressions(config *XDockerConfig) error {
-	for serviceName, serviceConfig := range config.Services {
-		service := serviceConfig.(map[interface{}]interface{})
-		err := resolveEnvVariablesAndExpressionsInMap(service)
-		if err != nil {
-			return fmt.Errorf("error in service %s: %v", serviceName, err)
-		}
-		config.Services[serviceName] = service
-	}
-	return nil
+    for serviceName, serviceConfig := range config.Services {
+        service, ok := serviceConfig.(map[string]interface{})
+        if !ok {
+            return fmt.Errorf("expected map[string]interface{} for service %s, got %T", serviceName, serviceConfig)
+        }
+        err := resolveEnvVariablesAndExpressionsInMap(service)
+        if err != nil {
+            return fmt.Errorf("error in service %s: %v", serviceName, err)
+        }
+        config.Services[serviceName] = service
+    }
+    return nil
 }
 func getTailscaleIP() (string, error) {
 	cmd := exec.Command("tailscale", "ip", "--4")
@@ -592,52 +605,51 @@ func getTailscaleIP() (string, error) {
 	}
 	return strings.TrimSpace(string(output)), nil
 }
-func resolveEnvVariablesAndExpressionsInMap(m map[interface{}]interface{}) error {
-	for key, value := range m {
-		switch v := value.(type) {
-		case string:
-			resolved, err := resolveEnvVariablesAndExpressionsInString(v)
-			if err != nil {
-				return fmt.Errorf("error resolving value for key '%v': %v", key, err)
-			}
-			m[key] = resolved
-		case map[interface{}]interface{}:
-			err := resolveEnvVariablesAndExpressionsInMap(v)
-			if err != nil {
-				return err
-			}
-		case []interface{}:
-			err := resolveEnvVariablesAndExpressionsInSlice(v)
-			if err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+func resolveEnvVariablesAndExpressionsInMap(m map[string]interface{}) error {
+    for key, value := range m {
+        switch v := value.(type) {
+        case string:
+            resolved, err := resolveEnvVariablesAndExpressionsInString(v)
+            if err != nil {
+                return fmt.Errorf("error resolving value for key '%v': %v", key, err)
+            }
+            m[key] = resolved
+        case map[string]interface{}:
+            err := resolveEnvVariablesAndExpressionsInMap(v)
+            if err != nil {
+                return err
+            }
+        case []interface{}:
+            err := resolveEnvVariablesAndExpressionsInSlice(v)
+            if err != nil {
+                return err
+            }
+        }
+    }
+    return nil
 }
-
 func resolveEnvVariablesAndExpressionsInSlice(s []interface{}) error {
-	for i, value := range s {
-		switch v := value.(type) {
-		case string:
-			resolved, err := resolveEnvVariablesAndExpressionsInString(v)
-			if err != nil {
-				return fmt.Errorf("error resolving value at index %d: %v", i, err)
-			}
-			s[i] = resolved
-		case map[interface{}]interface{}:
-			err := resolveEnvVariablesAndExpressionsInMap(v)
-			if err != nil {
-				return err
-			}
-		case []interface{}:
-			err := resolveEnvVariablesAndExpressionsInSlice(v)
-			if err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+    for i, value := range s {
+        switch v := value.(type) {
+        case string:
+            resolved, err := resolveEnvVariablesAndExpressionsInString(v)
+            if err != nil {
+                return fmt.Errorf("error resolving value at index %d: %v", i, err)
+            }
+            s[i] = resolved
+        case map[string]interface{}:
+            err := resolveEnvVariablesAndExpressionsInMap(v)
+            if err != nil {
+                return err
+            }
+        case []interface{}:
+            err := resolveEnvVariablesAndExpressionsInSlice(v)
+            if err != nil {
+                return err
+            }
+        }
+    }
+    return nil
 }
 
 func resolveEnvVariablesAndExpressionsInString(s string) (string, error) {
@@ -837,42 +849,13 @@ func run(command, composeFile, remoteHosts, identityFile string, detach, removeO
 }
 
 func customMarshal(in interface{}) ([]byte, error) {
-   yamlData, err := yaml.Marshal(in)
+   var buf bytes.Buffer
+   yamlEncoder := yaml.NewEncoder(&buf)
+   yamlEncoder.SetIndent(2)
+   
+   err := yamlEncoder.Encode(in)
    if err != nil {
       return nil, err
-   }
-
-   var buf bytes.Buffer
-   var indent int
-   var inService bool
-   var previousLine string
-
-   scanner := bufio.NewScanner(bytes.NewReader(yamlData))
-   for scanner.Scan() {
-      line := scanner.Text()
-      trimmedLine := strings.TrimSpace(line)
-
-      if strings.HasPrefix(trimmedLine, "services:") {
-         inService = true
-      }
-
-      if inService && strings.HasSuffix(previousLine, ":") && !strings.HasSuffix(trimmedLine, ":") {
-         indent = 6
-      } else if strings.HasSuffix(trimmedLine, ":") {
-         indent = 3 * (strings.Count(line, " ") / 2)
-      }
-
-      if trimmedLine == "" {
-         if inService && !strings.HasPrefix(previousLine, "services:") {
-            buf.WriteString("\n")
-         }
-         buf.WriteString("\n")
-      } else {
-         indentedLine := strings.Repeat("   ", indent) + trimmedLine + "\n"
-         buf.WriteString(indentedLine)
-      }
-
-      previousLine = trimmedLine
    }
 
    return buf.Bytes(), nil
@@ -904,7 +887,10 @@ func loadExtensions() error {
 
 func processCustomInstructions(config *XDockerConfig) error {
 	for serviceName, serviceConfig := range config.Services {
-		service := serviceConfig.(map[interface{}]interface{})
+		service, ok := serviceConfig.(map[string]interface{})
+        if !ok {
+            return fmt.Errorf("expected map[string]interface{} for service %s, got %T", serviceName, serviceConfig)
+        }
 		
 		for extName, ext := range extensions {
 			if strings.HasPrefix(ext.Path, "/$service/") {

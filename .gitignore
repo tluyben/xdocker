@@ -1,1 +1,6 @@
 /xdocker
+.env
+.env.local
+xdocker-compose.yml
+docker-compose-xdocker-compose.yml.yml
+docker-compose-xdocker-compose.yml
