@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -289,25 +288,6 @@ func main() {
 		err = run("up", *composeFile, "", "", *upDetach, !*upKeepOrphans, !*upNoBuild, upCmd.Args(), false, false, *upDry, *upTailscaleIP, *upLocalhost, "", *upExclude, *upGlobal)
 	case "down":
 		downCmd.Parse(os.Args[2:])
-		// var config *XDockerConfig
-		// config, err = readAndMergeConfigs(*composeFile)
-		// if err != nil {
-		// 	fmt.Printf("Error reading xdocker file: %v\n", err)
-		// 	os.Exit(1)
-		// }
-
-		// // Parse additional arguments from the config
-		// var configArgs []string
-		// if config.Args != "" {
-		// 	configArgs = strings.Fields(config.Args)
-		// 	config.Args = "" // remove from the docker-compose file as it's not valid
-		// }
-
-		// // Merge CLI args with config args
-		// allArgs := append(configArgs, downCmd.Args()...)
-
-		// // Process the merged arguments
-		// downCmd.Parse(allArgs)
 
 		err = run("down", *composeFile, "", "", false, !*downKeepOrphans, false, downCmd.Args(), false, false, *downDry, false, false, "", "", "")
 	case "ps":
@@ -501,52 +481,6 @@ func remoteInstall(hosts string, identityFile string, onlyDocker, onlyXDocker bo
 	}
 	
 }
-
-// func up(composeFile string, detach, removeOrphans, build bool, services []string) {
-// 	dockerComposeFile, err := processXDockerFile(composeFile)
-// 	if err != nil {
-// 		fmt.Printf("Error processing xdocker file: %v\n", err)
-// 		os.Exit(1)
-// 	}
-
-// 	args := []string{"-f", dockerComposeFile, "up"}
-// 	if detach {
-// 		args = append(args, "-d")
-// 	}
-// 	if removeOrphans {
-// 		args = append(args, "--remove-orphans")
-// 	}
-// 	if build {
-// 		args = append(args, "--build")
-// 	}
-// 	args = append(args, services...)
-
-// 	err = runDockerCompose(args...)
-// 	if err != nil {
-// 		fmt.Printf("Error running docker-compose up: %v\n", err)
-// 		os.Exit(1)
-// 	}
-// }
-
-// func down(composeFile string, removeOrphans bool, services []string) {
-// 	dockerComposeFile, err := processXDockerFile(composeFile)
-// 	if err != nil {
-// 		fmt.Printf("Error processing xdocker file: %v\n", err)
-// 		os.Exit(1)
-// 	}
-
-// 	args := []string{"-f", dockerComposeFile, "down"}
-// 	if removeOrphans {
-// 		args = append(args, "--remove-orphans")
-// 	}
-// 	args = append(args, services...)
-
-// 	err = runDockerCompose(args...)
-// 	if err != nil {
-// 		fmt.Printf("Error running docker-compose down: %v\n", err)
-// 		os.Exit(1)
-// 	}
-// }
 
 func runDockerCompose(args ...string) error {
 	cmd := exec.Command("docker-compose", args...)
@@ -794,46 +728,6 @@ func resolveEnvVariablesAndExpressionsInString(s string) (string, error) {
     return s, nil
 }
 
-func convertToString(v interface{}) string {
-	switch value := v.(type) {
-	case string:
-		return value
-	case bool:
-		return strconv.FormatBool(value)
-	case int:
-		return strconv.Itoa(value)
-	case float64:
-		return strconv.FormatFloat(value, 'f', -1, 64)
-	default:
-		bytes, err := json.Marshal(v)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error converting value to string: %v\n", err)
-			return fmt.Sprintf("%v", v)
-		}
-		return string(bytes)
-	}
-}
-
-// func processCustomInstructions(config *XDockerConfig) error {
-// 	for serviceName, serviceConfig := range config.Services {
-// 		service := serviceConfig.(map[interface{}]interface{})
-		
-// 		// Process the 'skip' property
-// 		if skip, ok := service["skip"]; ok {
-// 			delete(service, "skip")
-// 			skipValue := fmt.Sprintf("%v", skip)
-// 			if skipValue == "true" || skipValue == "yes" {
-// 				service["profiles"] = []string{"donotstart"}
-// 			}
-// 		}
-
-// 		// Add more custom instruction processing here
-
-// 		config.Services[serviceName] = service
-// 	}
-
-// 	return nil
-// }
 func mergeConfigs(parent, child *XDockerConfig) {
 	if child.Version == "" {
 		child.Version = parent.Version
@@ -1008,18 +902,6 @@ func writeConfig(filename string, config *XDockerConfig) error {
     return ioutil.WriteFile(filename, data, 0644)
 }
 
-// func expandEnvVariables(config *XDockerConfig) {
-// 	for serviceName, serviceConfig := range config.Services {
-// 		service := serviceConfig.(map[interface{}]interface{})
-// 		for key, value := range service {
-// 			if strValue, ok := value.(string); ok {
-// 				service[key] = os.ExpandEnv(strValue)
-// 			}
-// 		}
-// 		config.Services[serviceName] = service
-// 	}
-// }
-
 func run(command, composeFile, remoteHosts, identityFile string, detach, removeOrphans, build bool, services []string, onlyDocker, onlyXDocker, dry, tailscaleIP, localhost bool, tailscaleAuthKey, exclude, global string) error {
 
 
@@ -1091,7 +973,7 @@ func loadExtensions() error {
 		if _, err := os.Stat(dir); os.IsNotExist(err) {
 			continue
 		}
-		
+
         files, err := ioutil.ReadDir(dir)
         if err != nil {
             fmt.Fprintf(os.Stderr, "Warning: error reading extensions directory %s: %v\n", dir, err)
