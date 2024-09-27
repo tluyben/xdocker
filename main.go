@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -835,7 +837,45 @@ func run(command, composeFile, remoteHosts, identityFile string, detach, removeO
 }
 
 func customMarshal(in interface{}) ([]byte, error) {
-    return yaml.Marshal(in)
+   yamlData, err := yaml.Marshal(in)
+   if err != nil {
+      return nil, err
+   }
+
+   var buf bytes.Buffer
+   var indent int
+   var inService bool
+   var previousLine string
+
+   scanner := bufio.NewScanner(bytes.NewReader(yamlData))
+   for scanner.Scan() {
+      line := scanner.Text()
+      trimmedLine := strings.TrimSpace(line)
+
+      if strings.HasPrefix(trimmedLine, "services:") {
+         inService = true
+      }
+
+      if inService && strings.HasSuffix(previousLine, ":") && !strings.HasSuffix(trimmedLine, ":") {
+         indent = 6
+      } else if strings.HasSuffix(trimmedLine, ":") {
+         indent = 3 * (strings.Count(line, " ") / 2)
+      }
+
+      if trimmedLine == "" {
+         if inService && !strings.HasPrefix(previousLine, "services:") {
+            buf.WriteString("\n")
+         }
+         buf.WriteString("\n")
+      } else {
+         indentedLine := strings.Repeat("   ", indent) + trimmedLine + "\n"
+         buf.WriteString(indentedLine)
+      }
+
+      previousLine = trimmedLine
+   }
+
+   return buf.Bytes(), nil
 }
 
 func loadExtensions() error {
