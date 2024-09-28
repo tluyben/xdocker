@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/dop251/goja"
 	"github.com/joho/godotenv"
 	"github.com/tluyben/go-lua"
 	"golang.org/x/crypto/ssh"
@@ -684,7 +685,29 @@ func resolveEnvVariablesAndExpressionsInSlice(s []interface{}) error {
     }
     return nil
 }
+func evaluateLuaExpression(expr string) (string, error) {
+    l := lua.NewState()
+    lua.OpenLibraries(l)
 
+    if err := lua.DoString(l, "return "+expr); err != nil {
+        return "", err
+    }
+    if l.Top() == 0 {
+        return "", fmt.Errorf("Lua expression did not return a value")
+    }
+    result := lua.CheckString(l, -1)
+    l.Pop(1)
+    return result, nil
+}
+
+func evaluateJSExpression(expr string) (string, error) {
+    vm := goja.New()
+    result, err := vm.RunString(expr)
+    if err != nil {
+        return "", err
+    }
+    return result.String(), nil
+}
 func resolveEnvVariablesAndExpressionsInString(s string) (string, error) {
 	// First, resolve environment variables
 	reEnv := regexp.MustCompile(`\$(\w+)|\$\{(\w+)\}`)
@@ -705,27 +728,34 @@ func resolveEnvVariablesAndExpressionsInString(s string) (string, error) {
 		return "", fmt.Errorf("missing required environment variables: %s", strings.Join(missingVars, ", "))
 	}
 
-	// Then, evaluate expressions
-	reLua := regexp.MustCompile(`\{\{(.+?)\}\}`)
-    l := lua.NewState()
-    lua.OpenLibraries(l)
+	// Then, evaluate expressions for each language
+    languagePatterns := map[string]*regexp.Regexp{
+        "lua": regexp.MustCompile(`\{\{(.+?)\}\}`),
+        "js":  regexp.MustCompile(`\[\[(.+?)\]\]`),
+    }
 
-	
+    for lang, pattern := range languagePatterns {
+        s = pattern.ReplaceAllStringFunc(s, func(match string) string {
+            var expr string
+            var result string
+            var err error
 
-    s = reLua.ReplaceAllStringFunc(s, func(match string) string {
-        expr := match[2 : len(match)-2] // Remove {{ and }}
-        if err := lua.DoString(l, "return " + expr); err != nil {
-            fmt.Fprintf(os.Stderr, "Lua expression evaluation error: %s\n", err)
-            return match // Return original if evaluation fails
-        }
-        if l.Top() == 0 {
-            fmt.Fprintf(os.Stderr, "Lua expression did not return a value\n")
-            return match
-        }
-        result := lua.CheckString(l, -1)
-        l.Pop(1)
-        return result
-    })
+            switch lang {
+            case "lua":
+                expr = match[2 : len(match)-2] // Remove {{ and }}
+                result, err = evaluateLuaExpression(expr)
+            case "js":
+                expr = match[2 : len(match)-2] // Remove [[ and ]]
+                result, err = evaluateJSExpression(expr)
+            }
+
+            if err != nil {
+                fmt.Fprintf(os.Stderr, "%s expression evaluation error: %s\n", lang, err)
+                return match // Return original if evaluation fails
+            }
+            return result
+        })
+    }
 
     return s, nil
 }
@@ -1036,6 +1066,35 @@ func processCustomInstructions(config *XDockerConfig) error {
 	return nil
 }
 func processExtension(ext Extension, value string, composeFileName string) (string, error) {
+    // Determine the language based on the delimiters
+    trimmedGenerate := strings.TrimSpace(ext.Generate)
+
+    // Determine the language based on the delimiters
+    var lang string
+    var expr string
+
+    if strings.HasPrefix(trimmedGenerate, "{{") && strings.HasSuffix(trimmedGenerate, "}}") {
+        lang = "lua"
+        expr = strings.TrimSpace(trimmedGenerate[2 : len(trimmedGenerate)-2])
+    } else if strings.HasPrefix(trimmedGenerate, "[[") && strings.HasSuffix(trimmedGenerate, "]]") {
+        lang = "js"
+        expr = strings.TrimSpace(trimmedGenerate[2 : len(trimmedGenerate)-2])
+    } else {
+        // If no delimiters are found, default to Lua for backward compatibility
+        lang = "lua"
+        expr = trimmedGenerate
+    }
+
+    switch lang {
+    case "lua":
+        return processLuaExtension(ext, value, composeFileName, expr)
+    case "js":
+        return processJSExtension(ext, value, composeFileName, expr)
+    default:
+        return "", fmt.Errorf("unsupported language: %s", lang)
+    }
+}
+func processLuaExtension(ext Extension, value, composeFileName, expr string) (string, error) {
     l := lua.NewState()
     lua.OpenLibraries(l)
 
@@ -1045,11 +1104,11 @@ func processExtension(ext Extension, value string, composeFileName string) (stri
         case "bool":
             l.PushBoolean(value == "true" || value == "1" || value == "yes")
         case "int":
-			intValue, err := strconv.Atoi(value)
-			if err != nil {
-				return "", fmt.Errorf("error converting value to int: %v", err)
-			}
-			l.PushInteger(intValue)
+            intValue, err := strconv.Atoi(value)
+            if err != nil {
+                return "", fmt.Errorf("error converting value to int: %v", err)
+            }
+            l.PushInteger(intValue)
         case "float":
             floatValue, err := strconv.ParseFloat(value, 64)
             if err != nil {
@@ -1057,14 +1116,14 @@ func processExtension(ext Extension, value string, composeFileName string) (stri
             }
             l.PushNumber(floatValue)
         case "env":
-               envValue := os.Getenv(value)
-				if envValue == "" && arg.Default != "" {
-					envValue = os.Getenv(arg.Default)
-				}
-				if envValue == "" {
-					envValue = arg.Default // Use the default value directly if env var is not set
-				}
-				l.PushString(envValue)
+            envValue := os.Getenv(value)
+            if envValue == "" && arg.Default != "" {
+                envValue = os.Getenv(arg.Default)
+            }
+            if envValue == "" {
+                envValue = arg.Default // Use the default value directly if env var is not set
+            }
+            l.PushString(envValue)
         default: // string
             l.PushString(value)
         }
@@ -1075,13 +1134,7 @@ func processExtension(ext Extension, value string, composeFileName string) (stri
     l.PushString(composeFileName)
     l.SetGlobal("XDOCKER_COMPOSE_FILE")
 
-    // Remove {{}} from the generate expression
-    generateExpr := strings.TrimSpace(ext.Generate)
-    generateExpr = strings.TrimPrefix(generateExpr, "{{")
-    generateExpr = strings.TrimSuffix(generateExpr, "}}")
-
-	// fmt.Println(generateExpr)
-    if err := lua.DoString(l, generateExpr); err != nil {
+    if err := lua.DoString(l, expr); err != nil {
         return "", fmt.Errorf("error evaluating Lua expression: %v", err)
     }
 
@@ -1094,7 +1147,61 @@ func processExtension(ext Extension, value string, composeFileName string) (stri
 
     return result, nil
 }
+func processJSExtension(ext Extension, value, composeFileName, expr string) (string, error) {
+    vm := goja.New()
 
+    // Set up arguments
+    for argName, arg := range ext.Arguments {
+        switch arg.Type {
+        case "bool":
+            vm.Set(argName, value == "true" || value == "1" || value == "yes")
+        case "int":
+            intValue, err := strconv.Atoi(value)
+            if err != nil {
+                return "", fmt.Errorf("error converting value to int: %v", err)
+            }
+            vm.Set(argName, intValue)
+        case "float":
+            floatValue, err := strconv.ParseFloat(value, 64)
+            if err != nil {
+                return "", fmt.Errorf("error converting value to float: %v", err)
+            }
+            vm.Set(argName, floatValue)
+        case "env":
+            envValue := os.Getenv(value)
+            if envValue == "" && arg.Default != "" {
+                envValue = os.Getenv(arg.Default)
+            }
+            if envValue == "" {
+                envValue = arg.Default // Use the default value directly if env var is not set
+            }
+            vm.Set(argName, envValue)
+        default: // string
+            vm.Set(argName, value)
+        }
+    }
+
+    // Set XDOCKER_COMPOSE_FILE
+    vm.Set("XDOCKER_COMPOSE_FILE", composeFileName)
+
+    // Wrap the expression in a function
+    wrappedExpr := fmt.Sprintf(`
+        (function() {
+            %s
+        })()
+    `, expr)
+
+    result, err := vm.RunString(wrappedExpr)
+    if err != nil {
+        return "", fmt.Errorf("error evaluating JavaScript expression: %v", err)
+    }
+
+    if goja.IsUndefined(result) || goja.IsNull(result) {
+        return "", nil
+    }
+
+    return result.String(), nil
+}
 func runPs(composeFile string) error {
 	cmd := exec.Command("docker-compose", "-f", composeFile, "ps")
 	cmd.Stdout = os.Stdout

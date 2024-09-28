@@ -1,0 +1,16 @@
+name: skip-js
+required: false
+path: /$service/skip-js
+arguments:
+  shouldSkip:
+    type: bool
+    description: skip this service
+    required: true
+generate: |
+  [[
+    if (shouldSkip) {
+      return "profiles:\n  - donotstart\n";
+    } else {
+      return "";
+    }
+  ]]
