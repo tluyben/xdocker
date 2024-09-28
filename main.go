@@ -702,10 +702,23 @@ func evaluateLuaExpression(expr string) (string, error) {
 
 func evaluateJSExpression(expr string) (string, error) {
     vm := goja.New()
-    result, err := vm.RunString(expr)
+
+    // Wrap the expression in a function
+    wrappedExpr := fmt.Sprintf(`
+        (function() {
+            return %s;
+        })()
+    `, expr)
+
+    result, err := vm.RunString(wrappedExpr)
     if err != nil {
         return "", err
     }
+
+    if goja.IsUndefined(result) || goja.IsNull(result) {
+        return "", nil
+    }
+
     return result.String(), nil
 }
 func resolveEnvVariablesAndExpressionsInString(s string) (string, error) {
