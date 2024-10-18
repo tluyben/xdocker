@@ -44,16 +44,6 @@ docker-build:
 # Installs the binary to /usr/local/bin/ and sets up the global extensions directory
 install: build
 	sudo mv $(BINARY_NAME) /usr/local/bin/
-	sudo mkdir -p $(GLOBAL_EXTENSIONS_DIR)
-	sudo chmod 755 $(GLOBAL_EXTENSIONS_DIR)
-	if [ -d "./extensions" ]; then \
-		sudo cp -R ./extensions/* $(GLOBAL_EXTENSIONS_DIR)/; \
-	fi
-	sudo mkdir -p $(GLOBAL_SERVICES_DIR)
-	sudo chmod 755 $(GLOBAL_SERVICES_DIR)
-	if [ -d "./services" ]; then \
-		sudo cp -R ./services/* $(GLOBAL_SERVICES_DIR)/; \
-	fi 
 
 # Updates Go modules
 update:

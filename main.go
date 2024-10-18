@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"embed"
 	"flag"
 	"fmt"
-	"io/ioutil"
+	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +20,12 @@ import (
 	"golang.org/x/crypto/ssh"
 	"gopkg.in/yaml.v3"
 )
+
+//go:embed extensions/*
+var embeddedExtensions embed.FS
+
+//go:embed services/*
+var embeddedServices embed.FS
 
 const dockerInstallScript = `#!/bin/bash
 set -e
@@ -412,7 +420,7 @@ func remoteInstall(hosts string, identityFile string, onlyDocker, onlyXDocker bo
 
 		var auth []ssh.AuthMethod
 		if identityFile != "" {
-			key, err := ioutil.ReadFile(identityFile)
+			key, err := os.ReadFile(identityFile)
 			if err != nil {
 				fmt.Printf("Unable to read identity file: %v\n", err)
 				continue
@@ -426,7 +434,7 @@ func remoteInstall(hosts string, identityFile string, onlyDocker, onlyXDocker bo
 		} else {
 			// Try default SSH keys
 			home, _ := os.UserHomeDir()
-			key, err := ioutil.ReadFile(filepath.Join(home, ".ssh", "id_rsa"))
+			key, err := os.ReadFile(filepath.Join(home, ".ssh", "id_rsa"))
 			if err == nil {
 				signer, err := ssh.ParsePrivateKey(key)
 				if err == nil {
@@ -438,7 +446,7 @@ func remoteInstall(hosts string, identityFile string, onlyDocker, onlyXDocker bo
 		// If no authentication method is available, prompt for password
 		if len(auth) == 0 {
 			fmt.Printf("Enter password for %s: ", host)
-			password, _ := ioutil.ReadAll(os.Stdin)
+			password, _ := io.ReadAll(os.Stdin)
 			auth = append(auth, ssh.Password(strings.TrimSpace(string(password))))
 		}
 
@@ -552,7 +560,7 @@ func processXDockerFile(inputFile string, tailscaleIP, localhost bool, exclude, 
 		return "", fmt.Errorf("error generating docker-compose file: %v", err)
 	}
 
-	err = ioutil.WriteFile(outputFile, outputData, 0644)
+	err = os.WriteFile(outputFile, outputData, 0644)
 	if err != nil {
 		return "", fmt.Errorf("error writing docker-compose file: %v", err)
 	}
@@ -812,7 +820,7 @@ func readAndMergeConfigsRecursive(inputFile string, visited map[string]bool) (*X
 	}
 	visited[inputFile] = true
 
-	data, err := ioutil.ReadFile(inputFile)
+	data, err := os.ReadFile(inputFile)
 	if err != nil {
 		return nil, fmt.Errorf("error reading xdocker file %s: %v", inputFile, err)
 	}
@@ -906,6 +914,22 @@ func unskipServices(composeFile string, services []string) error {
 }
 
 func readServiceConfig(service string) (*XDockerConfig, error) {
+    filename := fmt.Sprintf("services/%s.yml", service)
+    data, err := embeddedServices.ReadFile(filename)
+    if err != nil {
+        return nil, fmt.Errorf("service definition for %s not found: %v", service, err)
+    }
+
+    var config XDockerConfig
+    err = yaml.Unmarshal(data, &config)
+    if err != nil {
+        return nil, err
+    }
+
+    return &config, nil
+}
+
+func _readServiceConfig(service string) (*XDockerConfig, error) {
     locations := []string{
         filepath.Join("services", service + ".yml"),
         filepath.Join(servicesDir, service + ".yml"),
@@ -919,7 +943,7 @@ func readServiceConfig(service string) (*XDockerConfig, error) {
     var err error
 
     for _, location := range locations {
-        data, err = ioutil.ReadFile(location)
+        data, err = os.ReadFile(location)
         if err == nil {
             break
         }
@@ -944,7 +968,7 @@ func writeConfig(filename string, config *XDockerConfig) error {
         return err
     }
 
-    return ioutil.WriteFile(filename, data, 0644)
+    return os.WriteFile(filename, data, 0644)
 }
 
 func run(command, composeFile, remoteHosts, identityFile string, detach, removeOrphans, build bool, services []string, onlyDocker, onlyXDocker, dry, tailscaleIP, localhost bool, tailscaleAuthKey, exclude, global string) error {
@@ -1003,9 +1027,36 @@ func customMarshal(in interface{}) ([]byte, error) {
 
    return buf.Bytes(), nil
 }
-
-
 func loadExtensions() error {
+    extensions = make(map[string]Extension)
+    
+    err := fs.WalkDir(embeddedExtensions, "extensions", func(path string, d fs.DirEntry, err error) error {
+        if err != nil {
+            return err
+        }
+        if !d.IsDir() && filepath.Ext(d.Name()) == ".yml" {
+            data, err := embeddedExtensions.ReadFile(path)
+            if err != nil {
+                return fmt.Errorf("error reading extension file %s: %v", d.Name(), err)
+            }
+            var ext Extension
+            err = yaml.Unmarshal(data, &ext)
+            if err != nil {
+                return fmt.Errorf("error parsing extension file %s: %v", d.Name(), err)
+            }
+            extensions[ext.Name] = ext
+        }
+        return nil
+    })
+
+    if err != nil {
+        return fmt.Errorf("error loading embedded extensions: %v", err)
+    }
+
+    return nil
+}
+
+func _loadExtensions() error {
     extensions = make(map[string]Extension)
     dirs := []string{extensionsDir}
     
@@ -1019,7 +1070,7 @@ func loadExtensions() error {
 			continue
 		}
 
-        files, err := ioutil.ReadDir(dir)
+        files, err := os.ReadDir(dir)
         if err != nil {
             fmt.Fprintf(os.Stderr, "Warning: error reading extensions directory %s: %v\n", dir, err)
             continue
@@ -1027,7 +1078,7 @@ func loadExtensions() error {
         for _, file := range files {
             if filepath.Ext(file.Name()) == ".yml" {
                 filePath := filepath.Join(dir, file.Name())
-                data, err := ioutil.ReadFile(filePath)
+                data, err := os.ReadFile(filePath)
                 if err != nil {
                     return fmt.Errorf("error reading extension file %s: %v", file.Name(), err)
                 }
