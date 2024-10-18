@@ -186,8 +186,99 @@ var (
 	servicesDir string
 
 )
+func printHelp() {
+	helpText := `
+xdocker - Extended Docker Compose Wrapper
+
+Usage: xdocker [command] [options]
+
+Commands:
+  up              Start Docker Compose services
+    -d            Run containers in the background
+    --build       Build images before starting containers
+    --dry         Generate Docker Compose file without starting containers
+    --tailscale-ip Use Tailscale IP for exposed ports
+    --localhost   Use localhost for exposed ports
+    --exclude     Comma-separated list of services to exclude from IP binding
+    --global      Comma-separated list of services to bind to 0.0.0.0
+    Example: xdocker up -d --tailscale-ip --exclude service1,service2
+
+  down            Stop Docker Compose services
+    --remove-orphans Remove containers for services not defined in the config
+    Example: xdocker down --remove-orphans
+
+  install         Set up xdocker environment (local or remote)
+    --hosts       Comma-separated list of user@host for remote installation
+    -i            Path to identity file for SSH
+    --only-docker Install only Docker components
+    --only-xdocker Install only Go and xdocker components
+    --tailscale-auth-key Tailscale authentication key
+    Example: xdocker install --hosts user@example.com -i ~/.ssh/id_rsa
+
+  ps              List containers
+    Example: xdocker ps
+
+  iexec           Open an interactive shell in a container
+    Example: xdocker iexec container_name
+
+  exec            Execute a command in a container
+    Example: xdocker exec container_name command
+
+  add             Add a new service to the compose file
+    Example: xdocker add service_name
+
+  remove          Remove a service from the compose file
+    Example: xdocker remove service_name
+
+  skip            Mark a service to be skipped during deployment
+    Example: xdocker skip service_name
+
+  unskip          Remove the skip flag from a service
+    Example: xdocker unskip service_name
+
+  add-port        Add a port mapping to a service
+    Example: xdocker add-port service_name 8080:80
+
+  remove-port     Remove a port mapping from a service
+    Example: xdocker remove-port 8080
+
+  update-port     Update an existing port mapping
+    Example: xdocker update-port 8080 9090
+
+  add-volume      Add a volume mapping to a service
+    Example: xdocker add-volume service_name /host/path:/container/path
+
+  remove-volume   Remove a volume mapping from a service
+    Example: xdocker remove-volume service_name /host/path:/container/path
+
+  update-volume   Update an existing volume mapping
+    Example: xdocker update-volume service_name /old/path:/container/path /new/path:/container/path
+
+Global Options:
+  -f              Path to xdocker compose file (default: xdocker-compose.yml)
+  --clean         Run Docker system prune without confirmation
+  --extension-dir Custom extensions directory
+  --services-dir  Custom services directory
+
+Environment Variables:
+  TAILSCALE_AUTH_KEY  Tailscale authentication key (can also be set via --tailscale-auth-key flag)
+
+For more detailed information, please refer to the README.md file.
+`
+	fmt.Println(helpText)
+}
 
 func main() {
+    // Define the help flag
+	helpFlag := flag.Bool("help", false, "Show help")
+	flag.Parse()
+
+	// Check if no arguments are provided or if the help flag is set
+	if len(os.Args) < 2 || *helpFlag {
+		printHelp()
+		os.Exit(0)
+	}
+    
 	installCmd := flag.NewFlagSet("install", flag.ExitOnError)
 	upCmd := flag.NewFlagSet("up", flag.ExitOnError)
 	downCmd := flag.NewFlagSet("down", flag.ExitOnError)
