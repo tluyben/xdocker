@@ -278,7 +278,7 @@ func main() {
 		printHelp()
 		os.Exit(0)
 	}
-    
+
 	installCmd := flag.NewFlagSet("install", flag.ExitOnError)
 	upCmd := flag.NewFlagSet("up", flag.ExitOnError)
 	downCmd := flag.NewFlagSet("down", flag.ExitOnError)
@@ -334,14 +334,14 @@ func main() {
 	}
 
 	// if extensionsDir does not exist, see if ./extensions exists and use that, if not, error out 
-	if _, err := os.Stat(extensionsDir); os.IsNotExist(err) {
-		if _, err := os.Stat("./extensions"); !os.IsNotExist(err) {
-			extensionsDir = "./extensions"
-		} else {
-			fmt.Fprintf(os.Stderr, "Extensions directory %s does not exist\n", extensionsDir)
-			os.Exit(1)
-		}
-	}
+    if extensionsDir !=  defaultGlobalExtensionsDir {
+        if _, err := os.Stat(extensionsDir); os.IsNotExist(err) {
+            
+            fmt.Fprintf(os.Stderr, "Extensions directory %s does not exist\n", extensionsDir)
+            os.Exit(1)
+            
+        }
+    }
 
 	if len(os.Args) < 2 {
 		fmt.Println("Expected 'install', 'up', 'down', 'ps', 'iexec', or 'exec' subcommands")
@@ -582,7 +582,62 @@ func remoteInstall(hosts string, identityFile string, onlyDocker, onlyXDocker bo
 	
 }
 
+func getDockerComposeCommand(args ...string) *exec.Cmd {
+ var dockerComposeCommand string
+    if _, err := exec.LookPath("docker-compose"); err == nil {
+		dockerComposeCommand = "docker-compose"
+	} else {
+		// Check for docker compose
+		cmd := exec.Command("docker", "compose", "version")
+		if err := cmd.Run(); err == nil {
+			dockerComposeCommand = "docker compose"
+		} else {
+			fmt.Println("Error: Neither 'docker-compose' nor 'docker compose' is available.")
+			os.Exit(1)
+		}
+	}
+	var cmd *exec.Cmd
+	if dockerComposeCommand == "docker-compose" {
+		cmd = exec.Command("docker-compose", args...)
+	} else {
+		cmdArgs := append([]string{"compose"}, args...)
+		cmd = exec.Command("docker", cmdArgs...)
+	}
+    return cmd
+}
+
 func runDockerCompose(args ...string) error {
+    cmd := getDockerComposeCommand(args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	err := cmd.Run()
+    return err 
+}
+
+func runDockerComposeWithUpProtection(args ...string) error {
+    err := runDockerCompose(args...)
+    if err != nil {
+		// Check if the error is due to container already existing
+		if strings.Contains(err.Error(), "already exists") {
+			fmt.Println("Container already exists. Removing and trying again...")
+            removeCmd := getDockerComposeCommand(args...)
+			removeCmd.Stdout = os.Stdout
+			removeCmd.Stderr = os.Stderr
+			err = removeCmd.Run()
+			if err != nil {
+				return fmt.Errorf("error removing existing container: %v", err)
+			}
+			// Try the original command again
+			return runDockerCompose(args...)
+		}
+		return err
+	}
+    return nil
+}
+
+
+func _runDockerCompose(args ...string) error {
 	cmd := exec.Command("docker-compose", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -1358,7 +1413,8 @@ func processJSExtension(ext Extension, value, composeFileName, expr string) (str
     return result.String(), nil
 }
 func runPs(composeFile string) error {
-	cmd := exec.Command("docker-compose", "-f", composeFile, "ps")
+    cmd := getDockerComposeCommand("-f", composeFile, "ps")
+    // cmd := exec.Command("docker-compose", "-f", composeFile, "ps")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -1403,7 +1459,8 @@ func getContainerName(composeFile, containerOrService string) (string, error) {
 	}
 
 	// If not, try to get the container name from the service name
-	cmd := exec.Command("docker-compose", "-f", composeFile, "ps", "-q", containerOrService)
+	//cmd := exec.Command("docker-compose", "-f", composeFile, "ps", "-q", containerOrService)
+    cmd := getDockerComposeCommand("-f", composeFile, "ps", "-q", containerOrService)
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("error getting container name: %v", err)
