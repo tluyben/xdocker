@@ -268,16 +268,235 @@ For more detailed information, please refer to the README.md file.
 	fmt.Println(helpText)
 }
 
-func main() {
-    // Define the help flag
-	helpFlag := flag.Bool("help", false, "Show help")
-	flag.Parse()
+func _main() {
+	// Define global flags
+	globalFlagSet := flag.NewFlagSet("global", flag.ExitOnError)
+	helpFlag := globalFlagSet.Bool("help", false, "Show help")
+	composeFile := globalFlagSet.String("f", "xdocker-compose.yml", "Path to xdocker compose file")
+	globalFlagSet.StringVar(&extensionsDir, "extension-dir", defaultGlobalExtensionsDir, "Custom extensions directory")
+	globalFlagSet.StringVar(&servicesDir, "services-dir", defaultGlobalServicesDir, "Custom services directory")
 
-	// Check if no arguments are provided or if the help flag is set
-	if len(os.Args) < 2 || *helpFlag {
+
+    	// Find the subcommand
+	subcommandIndex := 1
+	for i, arg := range os.Args[1:subcommandIndex] {
+		if !strings.HasPrefix(arg, "-") {
+			subcommandIndex = i + 1
+			break
+		}
+	}
+
+	// Parse global flags
+	globalFlagSet.Parse(os.Args[1:])
+
+	// Check if help flag is set or no arguments provided
+	if *helpFlag || len(os.Args) == 1 {
 		printHelp()
 		os.Exit(0)
 	}
+
+	// Define subcommands
+	commands := map[string]*flag.FlagSet{
+		"install":       flag.NewFlagSet("install", flag.ExitOnError),
+		"up":            flag.NewFlagSet("up", flag.ExitOnError),
+		"down":          flag.NewFlagSet("down", flag.ExitOnError),
+		"ps":            flag.NewFlagSet("ps", flag.ExitOnError),
+		"iexec":         flag.NewFlagSet("iexec", flag.ExitOnError),
+		"exec":          flag.NewFlagSet("exec", flag.ExitOnError),
+		"add":           flag.NewFlagSet("add", flag.ExitOnError),
+		"remove":        flag.NewFlagSet("remove", flag.ExitOnError),
+		"skip":          flag.NewFlagSet("skip", flag.ExitOnError),
+		"unskip":        flag.NewFlagSet("unskip", flag.ExitOnError),
+		"add-port":      flag.NewFlagSet("add-port", flag.ExitOnError),
+		"remove-port":   flag.NewFlagSet("remove-port", flag.ExitOnError),
+		"update-port":   flag.NewFlagSet("update-port", flag.ExitOnError),
+		"add-volume":    flag.NewFlagSet("add-volume", flag.ExitOnError),
+		"remove-volume": flag.NewFlagSet("remove-volume", flag.ExitOnError),
+		"update-volume": flag.NewFlagSet("update-volume", flag.ExitOnError),
+	}
+
+	// Find the subcommand
+	var subcommand string
+	for _, arg := range os.Args[1:] {
+		if !strings.HasPrefix(arg, "-") {
+			subcommand = arg
+			break
+		}
+	}
+
+	if subcommand == "" {
+		fmt.Println("Expected subcommand")
+		printHelp()
+		os.Exit(1)
+	}
+
+	// Get the flag set for the subcommand
+	cmd, exists := commands[subcommand]
+	if !exists {
+		fmt.Printf("Unknown subcommand: %s\n", subcommand)
+		printHelp()
+		os.Exit(1)
+	}
+
+	// Parse subcommand flags
+	cmd.Parse(os.Args[2:])
+
+	// Load extensions
+	if err := loadExtensions(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading extensions: %v\n", err)
+		os.Exit(1)
+	}
+
+	var err error
+
+	// Handle subcommands
+	switch subcommand {
+	case "install":
+		// Add install-specific flags
+		remoteHosts := cmd.String("hosts", "", "Comma-separated list of user@host")
+		identityFile := cmd.String("i", "", "Path to identity file")
+		onlyDocker := cmd.Bool("only-docker", false, "Install only Docker")
+		onlyXDocker := cmd.Bool("only-xdocker", false, "Install only Go and xDocker")
+		tailscaleAuthKeyFlag := cmd.String("tailscale-auth-key", "", "Tailscale authentication key (can also be set via TAILSCALE_AUTH_KEY env var)")
+
+		tailscaleAuthKey := *tailscaleAuthKeyFlag
+		if tailscaleAuthKey == "" {
+			tailscaleAuthKey = os.Getenv("TAILSCALE_AUTH_KEY")
+		}
+		err = run("install", *composeFile, *remoteHosts, *identityFile, false, false, false, nil, *onlyDocker, *onlyXDocker, false, false, false, tailscaleAuthKey, "", "")
+
+	case "up":
+		// Add up-specific flags
+		upDetach := cmd.Bool("d", false, "Detached mode")
+		upKeepOrphans := cmd.Bool("keep-orphans", false, "Keep containers for services not defined in the compose file")
+		upNoBuild := cmd.Bool("no-build", false, "Don't build images before starting containers")
+		upDry := cmd.Bool("dry", false, "Only generate the docker-compose file without starting containers")
+		upTailscaleIP := cmd.Bool("tailscale-ip", false, "Use Tailscale IP for exposed ports")
+		upLocalhost := cmd.Bool("localhost", false, "Use localhost for exposed ports")
+		upExclude := cmd.String("exclude", "", "Comma-separated list of services to exclude from IP binding")
+		upGlobal := cmd.String("global", "", "Comma-separated list of services to bind to 0.0.0.0")
+
+		var config *XDockerConfig
+		config, err = readAndMergeConfigs(*composeFile)
+		config.FileName = *composeFile
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error reading xdocker file: %v", err)
+			os.Exit(1)
+		}
+
+		var configArgs []string
+		if config.Args != "" {
+			configArgs = strings.Fields(config.Args)
+			config.Args = ""
+		}
+
+		allArgs := append(configArgs, cmd.Args()...)
+		cmd.Parse(allArgs)
+
+		err = run("up", *composeFile, "", "", *upDetach, !*upKeepOrphans, !*upNoBuild, cmd.Args(), false, false, *upDry, *upTailscaleIP, *upLocalhost, "", *upExclude, *upGlobal)
+
+	case "down":
+		// Add down-specific flags
+		downKeepOrphans := cmd.Bool("keep-orphans", false, "Keep containers for services not defined in the compose file")
+		downDry := cmd.Bool("dry", false, "Only generate the docker-compose file without stopping containers")
+
+		err = run("down", *composeFile, "", "", false, !*downKeepOrphans, false, cmd.Args(), false, false, *downDry, false, false, "", "", "")
+
+	case "ps":
+		err = runPs(*composeFile)
+
+	case "iexec":
+		if cmd.NArg() < 1 {
+			fmt.Println("iexec requires a container name or service name")
+			os.Exit(1)
+		}
+		err = runIExec(*composeFile, cmd.Arg(0))
+
+	case "exec":
+		if cmd.NArg() < 2 {
+			fmt.Println("exec requires a container name or service name and a command")
+			os.Exit(1)
+		}
+		err = runExec(*composeFile, cmd.Arg(0), cmd.Args()[1:])
+
+	case "add":
+		err = addServices(*composeFile, cmd.Args())
+
+	case "remove":
+		err = removeServices(*composeFile, cmd.Args())
+
+	case "skip":
+		err = skipServices(*composeFile, cmd.Args())
+
+	case "unskip":
+		err = unskipServices(*composeFile, cmd.Args())
+
+	case "add-port":
+		if cmd.NArg() != 2 {
+			fmt.Println("Usage: xdocker add-port <service> <port>")
+			os.Exit(1)
+		}
+		err = addPort(*composeFile, cmd.Arg(0), cmd.Arg(1))
+
+	case "remove-port":
+		if cmd.NArg() != 1 {
+			fmt.Println("Usage: xdocker remove-port <port>")
+			os.Exit(1)
+		}
+		err = removePort(*composeFile, cmd.Arg(0))
+
+	case "update-port":
+		if cmd.NArg() != 2 {
+			fmt.Println("Usage: xdocker update-port <old-port> <new-port>")
+			os.Exit(1)
+		}
+		err = updatePort(*composeFile, cmd.Arg(0), cmd.Arg(1))
+
+	case "add-volume":
+		if cmd.NArg() != 2 {
+			fmt.Println("Usage: xdocker add-volume <service> <volume>")
+			os.Exit(1)
+		}
+		err = addVolume(*composeFile, cmd.Arg(0), cmd.Arg(1))
+
+	case "remove-volume":
+		if cmd.NArg() != 2 {
+			fmt.Println("Usage: xdocker remove-volume <service> <volume>")
+			os.Exit(1)
+		}
+		err = removeVolume(*composeFile, cmd.Arg(0), cmd.Arg(1))
+
+	case "update-volume":
+		if cmd.NArg() != 3 {
+			fmt.Println("Usage: xdocker update-volume <service> <old-volume> <new-volume>")
+			os.Exit(1)
+		}
+		err = updateVolume(*composeFile, cmd.Arg(0), cmd.Arg(1), cmd.Arg(2))
+    default:
+		// fmt.Println("Expected 'install', 'up', 'down', 'ps', 'iexec', or 'exec' subcommands")
+        printHelp()
+		os.Exit(1)
+	}
+
+
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+func main() {
+    // Define the help flag
+	helpFlag := flag.Bool("help", false, "Show help")
+
+    // Check if no arguments are provided or if the help flag is set
+	if len(os.Args) < 2 {
+        fmt.Println("Expected subcommand", os.Args)
+		printHelp()
+		os.Exit(0)
+	}
+
+    // Global flag
+	composeFile := flag.String("f", "xdocker-compose.yml", "Path to xdocker compose file")
 
 	installCmd := flag.NewFlagSet("install", flag.ExitOnError)
 	upCmd := flag.NewFlagSet("up", flag.ExitOnError)
@@ -306,7 +525,6 @@ func main() {
 	// Add Tailscale auth key flag
 	tailscaleAuthKeyFlag := installCmd.String("tailscale-auth-key", "", "Tailscale authentication key (can also be set via TAILSCALE_AUTH_KEY env var)")
 
-
 	// Up command flags
 	upDetach := upCmd.Bool("d", false, "Detached mode")
 	upKeepOrphans := upCmd.Bool("keep-orphans", false, "Keep containers for services not defined in the compose file")
@@ -321,14 +539,17 @@ func main() {
 	downKeepOrphans := downCmd.Bool("keep-orphans", false, "Keep containers for services not defined in the compose file")
 	downDry := downCmd.Bool("dry", false, "Only generate the docker-compose file without stopping containers")
 
-	// Global flag
-	composeFile := flag.String("f", "xdocker-compose.yml", "Path to xdocker compose file")
-
 	// extensionsDir = defaultGlobalExtensionsDir
 	flag.StringVar(&extensionsDir, "extension-dir", "", "Custom extensions directory")
 	flag.StringVar(&servicesDir, "services-dir", defaultGlobalServicesDir, "Custom services directory")
 
 	flag.Parse()
+
+    if *helpFlag {
+        printHelp()
+        os.Exit(0)
+    }
+
 	if extensionsDir == "" {
 		extensionsDir = defaultGlobalExtensionsDir
 	}
@@ -343,27 +564,38 @@ func main() {
         }
     }
 
-	if len(os.Args) < 2 {
-		fmt.Println("Expected 'install', 'up', 'down', 'ps', 'iexec', or 'exec' subcommands")
-		os.Exit(1)
-	}
+	// if len(os.Args) < 2 {
+	// 	fmt.Println("Expected 'install', 'up', 'down', 'ps', 'iexec', or 'exec' subcommands")
+	// 	os.Exit(1)
+	// }
 
 	if err := loadExtensions(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading extensions: %v\n", err)
 		os.Exit(1)
 	}
 
-		var err error
-	switch os.Args[1] {
+    // Ensure we have a subcommand
+	if flag.NArg() < 1 {
+		fmt.Println("Expected subcommand")
+		printHelp()
+		os.Exit(1)
+	}
+    
+    // Get the subcommand and parse its flags
+	subcommand := flag.Arg(0)
+	subcommandArgs := flag.Args()[1:]
+
+	var err error
+	switch subcommand {
 	case "install":
-		installCmd.Parse(os.Args[2:])
+		installCmd.Parse(subcommandArgs)
 		tailscaleAuthKey := *tailscaleAuthKeyFlag
 		if tailscaleAuthKey == "" {
 			tailscaleAuthKey = os.Getenv("TAILSCALE_AUTH_KEY")
 		}
 		err = run("install", *composeFile, *remoteHosts, *identityFile, false, false, false, nil, *onlyDocker, *onlyXDocker, false, false, false, tailscaleAuthKey, "", "")
 	case "up":
-		upCmd.Parse(os.Args[2:])
+		upCmd.Parse(subcommandArgs)
 		var config *XDockerConfig
 		config, err = readAndMergeConfigs(*composeFile)
 		config.FileName = *composeFile
@@ -387,75 +619,75 @@ func main() {
 
 		err = run("up", *composeFile, "", "", *upDetach, !*upKeepOrphans, !*upNoBuild, upCmd.Args(), false, false, *upDry, *upTailscaleIP, *upLocalhost, "", *upExclude, *upGlobal)
 	case "down":
-		downCmd.Parse(os.Args[2:])
+		downCmd.Parse(subcommandArgs)
 
 		err = run("down", *composeFile, "", "", false, !*downKeepOrphans, false, downCmd.Args(), false, false, *downDry, false, false, "", "", "")
 	case "ps":
-		psCmd.Parse(os.Args[2:])
+		psCmd.Parse(subcommandArgs)
 		err = runPs(*composeFile)
 	case "iexec":
-		iexecCmd.Parse(os.Args[2:])
+		iexecCmd.Parse(subcommandArgs)
 		if iexecCmd.NArg() < 1 {
 			fmt.Println("iexec requires a container name or service name")
 			os.Exit(1)
 		}
 		err = runIExec(*composeFile, iexecCmd.Arg(0))
 	case "exec":
-		execCmd.Parse(os.Args[2:])
+		execCmd.Parse(subcommandArgs)
 		if execCmd.NArg() < 2 {
 			fmt.Println("exec requires a container name or service name and a command")
 			os.Exit(1)
 		}
 		err = runExec(*composeFile, execCmd.Arg(0), execCmd.Args()[1:])
     case "add":
-        addServiceCmd.Parse(os.Args[2:])
+        addServiceCmd.Parse(subcommandArgs)
         err = addServices(*composeFile, addServiceCmd.Args())
     case "remove":
-        removeServiceCmd.Parse(os.Args[2:])
+        removeServiceCmd.Parse(subcommandArgs)
         err = removeServices(*composeFile, removeServiceCmd.Args())
     case "skip":
-        skipServiceCmd.Parse(os.Args[2:])
+        skipServiceCmd.Parse(subcommandArgs)
         err = skipServices(*composeFile, skipServiceCmd.Args())
     case "unskip":
-        unskipServiceCmd.Parse(os.Args[2:])
+        unskipServiceCmd.Parse(subcommandArgs)
         err = unskipServices(*composeFile, unskipServiceCmd.Args())
 	case "add-port":
-        addPortCmd.Parse(os.Args[2:])
+        addPortCmd.Parse(subcommandArgs)
         if addPortCmd.NArg() != 2 {
             fmt.Println("Usage: xdocker add-port <service> <port>")
             os.Exit(1)
         }
         err = addPort(*composeFile, addPortCmd.Arg(0), addPortCmd.Arg(1))
     case "remove-port":
-        removePortCmd.Parse(os.Args[2:])
+        removePortCmd.Parse(subcommandArgs)
         if removePortCmd.NArg() != 1 {
             fmt.Println("Usage: xdocker remove-port <port>")
             os.Exit(1)
         }
         err = removePort(*composeFile, removePortCmd.Arg(0))
     case "update-port":
-        updatePortCmd.Parse(os.Args[2:])
+        updatePortCmd.Parse(subcommandArgs)
         if updatePortCmd.NArg() != 2 {
             fmt.Println("Usage: xdocker update-port <old-port> <new-port>")
             os.Exit(1)
         }
         err = updatePort(*composeFile, updatePortCmd.Arg(0), updatePortCmd.Arg(1))
     case "add-volume":
-        addVolumeCmd.Parse(os.Args[2:])
+        addVolumeCmd.Parse(subcommandArgs)
         if addVolumeCmd.NArg() != 2 {
             fmt.Println("Usage: xdocker add-volume <service> <volume>")
             os.Exit(1)
         }
         err = addVolume(*composeFile, addVolumeCmd.Arg(0), addVolumeCmd.Arg(1))
     case "remove-volume":
-        removeVolumeCmd.Parse(os.Args[2:])
+        removeVolumeCmd.Parse(subcommandArgs)
         if removeVolumeCmd.NArg() != 2 {
             fmt.Println("Usage: xdocker remove-volume <service> <volume>")
             os.Exit(1)
         }
         err = removeVolume(*composeFile, removeVolumeCmd.Arg(0), removeVolumeCmd.Arg(1))
     case "update-volume":
-        updateVolumeCmd.Parse(os.Args[2:])
+        updateVolumeCmd.Parse(subcommandArgs)
         if updateVolumeCmd.NArg() != 3 {
             fmt.Println("Usage: xdocker update-volume <service> <old-volume> <new-volume>")
             os.Exit(1)
@@ -463,7 +695,8 @@ func main() {
         err = updateVolume(*composeFile, updateVolumeCmd.Arg(0), updateVolumeCmd.Arg(1), updateVolumeCmd.Arg(2))
 
 	default:
-		fmt.Println("Expected 'install', 'up', 'down', 'ps', 'iexec', or 'exec' subcommands")
+		// fmt.Println("Expected 'install', 'up', 'down', 'ps', 'iexec', or 'exec' subcommands")
+        printHelp()
 		os.Exit(1)
 	}
 
