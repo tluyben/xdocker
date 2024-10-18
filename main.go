@@ -964,7 +964,7 @@ func modifyPortMappings(config *XDockerConfig, useTailscale bool, exclude, globa
     globalServices := strings.Split(global, ",")
 
     for serviceName, serviceConfig := range config.Services {
-        service := serviceConfig.(map[interface{}]interface{})
+        service := serviceConfig.(map[string]interface {})
         if ports, ok := service["ports"].([]interface{}); ok {
             for i, port := range ports {
                 portStr := port.(string)
